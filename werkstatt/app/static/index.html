@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14120f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Werkstatt</title>
+<link rel="icon" href="/favicon.ico" type="image/svg+xml">
+<link rel="stylesheet" href="/static/style.css?v=2">
+</head>
+<body>
+<header>
+  <a class="brand" href="#uebersicht"><span class="logo-dot"></span><span id="brandName">Werkstatt</span></a>
+  <button class="navtoggle" id="navToggle" aria-label="Menü">☰</button>
+  <nav id="nav">
+    <a href="#uebersicht" data-r="uebersicht">Übersicht</a>
+    <a href="#auftraege" data-r="auftraege auftrag">Aufträge</a>
+    <a href="#kunden" data-r="kunden kunde">Kunden</a>
+    <a href="#drucke" data-r="drucke">Drucke <span class="navbadge hidden" id="druckBadge"></span></a>
+    <a href="#rechnungen" data-r="rechnungen">Rechnungen</a>
+    <a href="#rechner" data-r="rechner">Rechner</a>
+    <a href="#auswertung" data-r="auswertung">Auswertung</a>
+    <a href="#maschinen" data-r="maschinen">Maschinen</a>
+    <a href="#material" data-r="material">Material</a>
+    <a href="#einstellungen" data-r="einstellungen" class="gear">⚙ Einstellungen</a>
+  </nav>
+</header>
+<main id="view"><div class="loading">Lade …</div></main>
+<div id="modalRoot"></div>
+<div id="toasts"></div>
+<div id="lightbox" class="hidden"><img alt=""><button class="lb-close" aria-label="Schließen">✕</button>
+  <button class="lb-prev" aria-label="Zurück">‹</button><button class="lb-next" aria-label="Weiter">›</button><div class="lb-cap"></div></div>
+<script src="/static/app.js?v=2"></script>
+</body>
+</html>

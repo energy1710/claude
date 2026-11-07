@@ -1,0 +1,7 @@
+fastapi==0.115.*
+hypercorn==0.17.*
+python-multipart==0.0.*
+smbprotocol>=1.15
+fpdf2>=2.8
+Pillow>=10
+pillow-heif>=0.18
