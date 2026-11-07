@@ -18,7 +18,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import backup, bestellung, calc, db, ha, images, pdf, seed, settings, storage
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 for _noisy in ("smbprotocol", "smbclient", "spnego", "fontTools", "fpdf"):
@@ -134,6 +134,8 @@ TABLES = {
                  "leistung_w", "stunden_vorher", "wartung_eur_h", "farbe", "notizen", "aktiv", "ha_liste"],
     "wear_parts": ["machine_id", "name", "preis", "lebensdauer_h", "gewechselt_bei_h", "notizen"],
     "materials": ["name", "typ", "hersteller", "farbe", "einheit", "preis", "bestand", "notizen", "aktiv"],
+    "products": ["artikelnr", "name", "kategorie", "beschreibung", "farbe_material", "einheit", "preis",
+                 "herstellkosten", "bestand", "notizen", "aktiv"],
     "orders": ["customer_id", "titel", "beschreibung", "status", "eingang", "termin", "ordner", "aufschlag_pct",
                "vertrieb", "uebergabe", "versand", "zahlungsart", "anzahlung", "zahlungsstatus", "zahlungsdatum",
                "wuensche", "notizen"],
@@ -149,8 +151,9 @@ TABLES = {
 NUMERIC = {"stundensatz", "verrechnungssatz", "anschaffung_preis", "lebensdauer_h", "leistung_w", "stunden_vorher",
            "wartung_eur_h", "preis", "gewechselt_bei_h", "bestand", "aufschlag_pct", "dauer_h", "menge", "stueck",
            "stunden", "betrag", "sort", "einzelpreis", "aktiv", "customer_id", "machine_id", "material_id",
-           "order_id", "person_id", "versand", "anzahlung", "kwh"}
-REQUIRED = {"persons": "name", "machines": "name", "wear_parts": "name", "materials": "name", "orders": "titel"}
+           "order_id", "person_id", "versand", "anzahlung", "kwh", "herstellkosten"}
+REQUIRED = {"persons": "name", "machines": "name", "wear_parts": "name", "materials": "name", "orders": "titel",
+            "products": "name"}
 STATUS = ["anfrage", "angebot", "in_arbeit", "fertig", "abgeholt", "abgerechnet", "bezahlt", "storniert"]
 
 
@@ -658,12 +661,33 @@ def _clean_pos(pos):
     for p in pos or []:
         if not (p.get("bezeichnung") or "").strip():
             continue
-        out.append({"bezeichnung": p["bezeichnung"].strip(), "beschreibung": (p.get("beschreibung") or "").strip(),
+        item = {"bezeichnung": p["bezeichnung"].strip(), "beschreibung": (p.get("beschreibung") or "").strip(),
                     "farbe_material": (p.get("farbe_material") or "").strip(),
                     "personalisierung": (p.get("personalisierung") or "").strip(),
                     "menge": calc.f(str(p.get("menge") or 0).replace(",", ".")), "einheit": p.get("einheit") or "",
-                    "einzelpreis": calc.f(str(p.get("einzelpreis") or 0).replace(",", "."))})
+                    "einzelpreis": calc.f(str(p.get("einzelpreis") or 0).replace(",", "."))}
+        try:
+            pid = int(p.get("product_id") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if pid:
+            item["product_id"] = pid
+        out.append(item)
     return out
+
+
+def _stock_active(typ, status):
+    """Nur gültige Rechnungen buchen Produkte aus dem Lager ab (keine Angebote, keine Stornos)."""
+    return typ == "rechnung" and status != "storniert"
+
+
+def _product_stock(c, pos, sign):
+    """Produkt-Lagerbestand anpassen: sign=-1 verkauft, +1 zurückbuchen."""
+    for p in pos or []:
+        pid, menge = p.get("product_id"), calc.f(p.get("menge"))
+        if pid and menge:
+            c.execute("UPDATE products SET bestand = ROUND(bestand + ?, 4) WHERE id=? AND bestand IS NOT NULL",
+                      (sign * menge, pid))
 
 
 def _render_doc(did, copy_smb=True):
@@ -685,6 +709,40 @@ def _render_doc(did, copy_smb=True):
     return warn
 
 
+def _kunde_json(k):
+    return {kk: k.get(kk) for kk in ("nr", "firma", "anrede", "vorname", "nachname", "strasse", "plz", "ort", "land",
+                                     "uid", "email")} if k else {}
+
+
+def _insert_doc(c, body, pos, o, k, bezahlt_am=None):
+    """Legt Rechnung/Angebot an (mit oder ohne Auftrag) und bucht Produkte aus dem Lager ab."""
+    datum = body.datum or date.today().isoformat()
+    tage = settings.num("zahlungsziel_tage" if body.typ == "rechnung" else "angebot_gueltig_tage", 14)
+    faellig = body.faellig or (date.fromisoformat(datum) + timedelta(days=int(tage))).isoformat()
+    prefix = settings.get("prefix_rechnung" if body.typ == "rechnung" else "prefix_angebot")
+    nr = db.next_nr(c, "documents", prefix, typ=body.typ, year=datum[:4])
+    einl = body.einleitung if body.einleitung is not None else settings.get(f"{body.typ}_einleitung")
+    schl = body.schluss if body.schluss is not None else settings.get(
+        "rechnung_schluss_bezahlt" if bezahlt_am else f"{body.typ}_schluss")
+    t = _totals(pos)
+    anz = None
+    if body.typ == "rechnung":
+        anz = body.anzahlung if body.anzahlung is not None else calc.f((o or {}).get("anzahlung")) or None
+    status = "bezahlt" if bezahlt_am and body.typ == "rechnung" else "offen"
+    cur = c.execute(
+        "INSERT INTO documents(typ, nr, order_id, customer_id, datum, leistungsdatum, faellig, kunde_json,"
+        " positionen_json, einleitung, schluss, netto, ust_satz, ust, brutto, kleinunternehmer, notizen,"
+        " anzahlung, status, bezahlt_am) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (body.typ, nr, o["id"] if o else None, k["id"] if k else None, datum,
+         body.leistungsdatum or (datum if body.typ == "rechnung" else None), faellig,
+         json.dumps(_kunde_json(k), ensure_ascii=False), json.dumps(pos, ensure_ascii=False), einl, schl,
+         t["netto"], t["ust_satz"], t["ust"], t["brutto"], t["kleinunternehmer"], body.notizen, anz,
+         status, bezahlt_am if status == "bezahlt" else None))
+    if _stock_active(body.typ, status):
+        _product_stock(c, pos, -1)
+    return cur.lastrowid, nr
+
+
 @app.post("/api/orders/{oid}/documents")
 def create_doc(oid: int, body: DocIn):
     if body.typ not in ("rechnung", "angebot"):
@@ -704,30 +762,37 @@ def create_doc(oid: int, body: DocIn):
             raise HTTPException(400, "Keine Positionen – bitte zuerst Rechnungspositionen anlegen.")
         if not k:
             raise HTTPException(400, "Dem Auftrag ist noch kein Kunde zugeordnet.")
-        datum = body.datum or date.today().isoformat()
-        tage = settings.num("zahlungsziel_tage" if body.typ == "rechnung" else "angebot_gueltig_tage", 14)
-        faellig = body.faellig or (date.fromisoformat(datum) + timedelta(days=int(tage))).isoformat()
-        prefix = settings.get("prefix_rechnung" if body.typ == "rechnung" else "prefix_angebot")
-        nr = db.next_nr(c, "documents", prefix, typ=body.typ, year=datum[:4])
-        kunde = {kk: k.get(kk) for kk in ("nr", "firma", "anrede", "vorname", "nachname", "strasse", "plz", "ort",
-                                          "land", "uid", "email")}
-        einl = body.einleitung if body.einleitung is not None else settings.get(f"{body.typ}_einleitung")
-        schl = body.schluss if body.schluss is not None else settings.get(f"{body.typ}_schluss")
-        t = _totals(pos)
-        cur = c.execute(
-            "INSERT INTO documents(typ, nr, order_id, customer_id, datum, leistungsdatum, faellig, kunde_json,"
-            " positionen_json, einleitung, schluss, netto, ust_satz, ust, brutto, kleinunternehmer, notizen,"
-            " anzahlung) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (body.typ, nr, oid, k["id"], datum, body.leistungsdatum or (datum if body.typ == "rechnung" else None),
-             faellig, json.dumps(kunde, ensure_ascii=False), json.dumps(pos, ensure_ascii=False), einl, schl,
-             t["netto"], t["ust_satz"], t["ust"], t["brutto"], t["kleinunternehmer"], body.notizen,
-             (body.anzahlung if body.anzahlung is not None else calc.f(o.get("anzahlung")))
-             if body.typ == "rechnung" else None))
-        did = cur.lastrowid
+        did, nr = _insert_doc(c, body, pos, o, k)
         new_status = "abgerechnet" if body.typ == "rechnung" else "angebot"
         order_rank = STATUS.index(o["status"]) if o["status"] in STATUS else 0
         if STATUS.index(new_status) > order_rank and o["status"] != "storniert":
             c.execute("UPDATE orders SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (new_status, oid))
+    warn = _render_doc(did)
+    return {"id": did, "nr": nr, "warning": warn}
+
+
+class DocFrei(DocIn):
+    customer_id: Optional[int] = None
+    bezahlt: bool = False
+    bezahlt_am: Optional[str] = None
+
+
+@app.post("/api/documents")
+def create_doc_frei(body: DocFrei):
+    """Rechnung/Angebot ohne Auftrag – z. B. Verkauf fertiger Produkte aus dem Lager."""
+    if body.typ not in ("rechnung", "angebot"):
+        raise HTTPException(400, "Typ muss rechnung oder angebot sein")
+    with db.conn() as c:
+        k = None
+        if body.customer_id:
+            k = db.one(c.execute("SELECT * FROM customers WHERE id=?", (body.customer_id,)))
+            if not k:
+                raise HTTPException(400, "Kunde nicht gefunden")
+        pos = _clean_pos(body.positionen)
+        if not pos:
+            raise HTTPException(400, "Bitte mindestens eine Position eintragen.")
+        bezahlt_am = (body.bezahlt_am or body.datum or date.today().isoformat()) if body.bezahlt else None
+        did, nr = _insert_doc(c, body, pos, None, k, bezahlt_am)
     warn = _render_doc(did)
     return {"id": did, "nr": nr, "warning": warn}
 
@@ -744,6 +809,7 @@ class DocUpd(BaseModel):
     positionen: Optional[list] = None
     anzahlung: Optional[float] = None
     kunde_aktualisieren: bool = False
+    customer_id: Optional[int] = None       # nur bei Rechnungen ohne Auftrag; 0 = ohne Kunde
 
 
 @app.put("/api/documents/{did}")
@@ -786,13 +852,24 @@ def update_doc(did: int, body: DocUpd):
             sets["positionen_json"] = json.dumps(pos, ensure_ascii=False)
             sets.update(_totals(pos))
             rerender = True
-        if body.kunde_aktualisieren and d["customer_id"]:
+        if body.customer_id is not None and not d["order_id"] and (body.customer_id or None) != d["customer_id"]:
+            k = db.one(c.execute("SELECT * FROM customers WHERE id=?", (body.customer_id,))) if body.customer_id else None
+            if body.customer_id and not k:
+                raise HTTPException(400, "Kunde nicht gefunden")
+            sets["customer_id"] = k["id"] if k else None
+            sets["kunde_json"] = json.dumps(_kunde_json(k), ensure_ascii=False)
+            rerender = True
+        elif body.kunde_aktualisieren and d["customer_id"]:
             k = db.one(c.execute("SELECT * FROM customers WHERE id=?", (d["customer_id"],)))
             if k:
-                sets["kunde_json"] = json.dumps({kk: k.get(kk) for kk in (
-                    "nr", "firma", "anrede", "vorname", "nachname", "strasse", "plz", "ort", "land", "uid", "email")},
-                    ensure_ascii=False)
+                sets["kunde_json"] = json.dumps(_kunde_json(k), ensure_ascii=False)
                 rerender = True
+        # Lager: alten Stand zurückbuchen, neuen abbuchen (Storno / Positionen geändert)
+        if _stock_active(d["typ"], d["status"]):
+            _product_stock(c, d["positionen"], +1)
+        new_pos = json.loads(sets["positionen_json"]) if "positionen_json" in sets else d["positionen"]
+        if _stock_active(d["typ"], sets.get("status", d["status"])):
+            _product_stock(c, new_pos, -1)
         if sets:
             c.execute(f"UPDATE documents SET {', '.join(f'{k}=?' for k in sets)} WHERE id=?", [*sets.values(), did])
     warn = _render_doc(did) if rerender else None
@@ -816,6 +893,8 @@ def delete_doc(did: int):
             if nxt != _bump(d["nr"]):
                 raise HTTPException(400, "Nur die letzte Rechnung kann gelöscht werden (lückenlose Nummern). "
                                          "Ältere Rechnungen bitte auf „storniert“ setzen.")
+        if _stock_active(d["typ"], d["status"]):
+            _product_stock(c, json.loads(d["positionen_json"] or "[]"), +1)
         c.execute("DELETE FROM documents WHERE id=?", (did,))
     if d.get("pdf"):
         try:
@@ -900,7 +979,8 @@ def auswertung(jahr: int = 0):
             m["umsatz"] += doc["netto"] or 0
             if doc["status"] == "bezahlt":
                 m["bezahlt"] += doc["netto"] or 0
-            kunden_umsatz[doc["customer_id"]] = kunden_umsatz.get(doc["customer_id"], 0) + (doc["netto"] or 0)
+            if doc["customer_id"]:
+                kunden_umsatz[doc["customer_id"]] = kunden_umsatz.get(doc["customer_id"], 0) + (doc["netto"] or 0)
     for j in d["order_jobs"]:
         m = mon(j["datum"], j["order_id"])
         if m:

@@ -73,6 +73,22 @@ CREATE TABLE IF NOT EXISTS materials(
   aktiv INTEGER DEFAULT 1
 );
 
+CREATE TABLE IF NOT EXISTS products(
+  id INTEGER PRIMARY KEY,
+  artikelnr TEXT,
+  name TEXT NOT NULL,
+  kategorie TEXT,
+  beschreibung TEXT,                   -- erscheint auf der Rechnung
+  farbe_material TEXT,
+  einheit TEXT DEFAULT 'Stk',
+  preis REAL DEFAULT 0,                -- Verkaufspreis netto
+  herstellkosten REAL,                 -- Selbstkosten pro Stück (für Gewinn), optional
+  bestand REAL,                        -- Lagerbestand, leer = nicht mitzählen
+  notizen TEXT,
+  aktiv INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS orders(
   id INTEGER PRIMARY KEY,
   nr TEXT,

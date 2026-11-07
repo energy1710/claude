@@ -591,7 +591,24 @@ function genItems(o) {
 
 // ---------- Kalkulationseinträge ----------
 function machineOpts(sel) { return opt('', '— keine —', sel) + D.machines.filter((m) => m.aktiv || m.id === +sel).map((m) => opt(m.id, `${m.name} (${eur3(m.satz)}/h)`, sel)).join(''); }
-function materialOpts(sel) { return opt('', '— kein Material —', sel) + D.materials.filter((m) => m.aktiv || m.id === +sel).map((m) => opt(m.id, `${m.name}${m.farbe && m.farbe !== 'diverse' ? ' · ' + m.farbe : ''} (${eur(m.preis)}/${m.einheit})`, sel)).join(''); }
+// 3D-Drucker → nur Filament, Laser → Platten & sonstiges Lasermaterial, sonst alles
+function matTypesFor(machineId) {
+  const m = byId(D.machines, +machineId);
+  if (!m) return null;
+  if (m.typ === 'fdm') return ['filament'];
+  if (m.typ === 'laser') return ['platte', 'sonstiges'];
+  return null;
+}
+const matFits = (mat, machineId) => { const t = matTypesFor(machineId); return !t || t.includes(mat.typ); };
+function materialOpts(sel, machineId) { return opt('', '— kein Material —', sel) + D.materials.filter((m) => (m.aktiv && matFits(m, machineId)) || m.id === +sel).map((m) => opt(m.id, `${m.name}${m.farbe && m.farbe !== 'diverse' ? ' · ' + m.farbe : ''} (${eur(m.preis)}/${m.einheit})`, sel)).join(''); }
+function syncMaterialSelect(form) {
+  const ms = $('[name=machine_id]', form); const sel = $('[name=material_id]', form);
+  let cur = sel.value;
+  const mat = byId(D.materials, +cur);
+  if (mat && !matFits(mat, ms.value)) cur = (D.materials.find((m) => m.aktiv && matFits(m, ms.value)) || {}).id || '';
+  sel.innerHTML = materialOpts(cur, ms.value);
+  sel.value = String(cur ?? '');
+}
 function personOpts(sel) { return D.persons.filter((p) => p.aktiv || p.id === +sel).map((p) => opt(p.id, p.name, sel)).join(''); }
 
 window.editJob = (id, orderId) => {
@@ -603,7 +620,7 @@ window.editJob = (id, orderId) => {
       { k: 'datum', l: 'Datum', t: 'date', s: 6 },
       { k: 'bezeichnung', l: 'Was wurde gedruckt / gelasert?', ph: 'z. B. Schlüsselanhänger Platte 1' },
       { k: 'dauer_h', l: 'Dauer (Std:Min)', t: 'h', s: 4, hint: 'z. B. 2:15 oder 2h15m – steht im Slicer / LightBurn' },
-      { k: 'material_id', l: 'Material', t: 'select', o: materialOpts, s: 8 },
+      { k: 'material_id', l: 'Material', t: 'select', o: (v) => materialOpts(v, j.machine_id), s: 8 },
       { k: 'menge', l: 'Materialmenge', t: 'num', s: 4, hint: '<span id="mengeHint">Gramm bei Filament, sonst Stück/m²</span>' },
       { k: 'stueck', l: 'Ergibt Stück', t: 'num', s: 4, hint: 'für Preis pro Stück' },
       { k: 'notizen', l: 'Notiz', s: 4 },
@@ -613,7 +630,9 @@ window.editJob = (id, orderId) => {
     onDelete: id ? async () => { await api('DELETE', `/api/t/order_jobs/${id}`); await refresh(); } : null,
     after: (el) => {
       const upd = () => { const m = byId(D.materials, +$('[name=material_id]', el).value); $('#mengeHint', el).textContent = m ? (m.einheit === 'kg' ? 'in Gramm (laut Slicer)' : `in ${m.einheit}`) : 'Gramm bei Filament, sonst Stück/m²'; };
-      $('[name=material_id]', el).onchange = upd; upd();
+      $('[name=material_id]', el).onchange = upd;
+      $('[name=machine_id]', el).addEventListener('change', () => { syncMaterialSelect(el); upd(); });
+      upd();
     },
   });
 };
@@ -652,17 +671,44 @@ window.editCost = (id, orderId) => {
 // ======================================================================
 //  Rechnungen & Angebote
 // ======================================================================
-window.docEditor = ({ orderId, typ, docId }) => {
+const prodToPos = (p, menge = 1) => ({ bezeichnung: p.name, beschreibung: p.beschreibung || '', farbe_material: p.farbe_material || '', personalisierung: '', menge, einheit: p.einheit || 'Stk', einzelpreis: +p.preis || 0, product_id: p.id });
+
+// Produkt aus dem Katalog wählen (Suche, Lagerbestand sichtbar)
+function pickProduct(onPick) {
+  let q = '';
+  const m = modal({
+    title: 'Produkt aus dem Katalog',
+    body: `<div class="toolbar"><input type="search" id="ppQ" placeholder="Name, Kategorie, Artikelnummer …"></div><ul class="list-compact" id="ppList"></ul>`,
+    footer: '<span class="spacer"></span><button class="secondary" data-cancel>Schließen</button>',
+  });
+  const draw = () => {
+    const ql = q.toLowerCase();
+    const list = D.products.filter((p) => p.aktiv && (!ql || `${p.artikelnr || ''} ${p.name} ${p.kategorie || ''} ${p.farbe_material || ''}`.toLowerCase().includes(ql)))
+      .sort((a, b) => (a.kategorie || '').localeCompare(b.kategorie || '', 'de') || a.name.localeCompare(b.name, 'de'));
+    $('#ppList', m.el).innerHTML = list.length ? list.map((p) => `<li class="click" data-id="${p.id}"><div class="grow"><b>${esc(p.name)}</b>
+        <div class="muted tiny">${esc([p.artikelnr, p.kategorie, p.farbe_material].filter(Boolean).join(' · '))}</div></div>
+        ${p.bestand == null ? '' : `<span class="small ${p.bestand <= 0 ? 'err' : 'muted'}">Lager ${num(p.bestand)}</span>`}<span class="num"><b>${eur(p.preis)}</b></span></li>`).join('')
+      : `<li class="muted">${D.products.length ? 'Nichts gefunden.' : 'Noch keine Produkte angelegt – unter „Produkte“ kannst du deinen Katalog anlegen.'}</li>`;
+  };
+  draw();
+  $('#ppQ', m.el).oninput = (e) => { q = e.target.value; draw(); };
+  $('#ppList', m.el).onclick = (e) => { const li = e.target.closest('li[data-id]'); if (!li) return; onPick(byId(D.products, +li.dataset.id)); m.close(); };
+  $('[data-cancel]', m.el).onclick = m.close;
+}
+
+window.docEditor = ({ orderId, typ, docId, preset }) => {
   const d = docId ? byId(D.documents, docId) : null;
   const o = byId(D.orders, d ? d.order_id : orderId);
   typ = d ? d.typ : typ;
+  const frei = !o;                       // Rechnung/Angebot ohne Auftrag (z. B. Verkauf aus dem Lager)
   let pos;
   if (d) pos = d.positionen.map((p) => ({ ...p }));
-  else {
+  else if (preset) pos = preset.map((p) => ({ ...p }));
+  else if (o) {
     pos = D.order_items.filter((i) => i.order_id === orderId).sort((a, b) => a.sort - b.sort || a.id - b.id)
       .map((i) => ({ bezeichnung: i.bezeichnung, beschreibung: i.beschreibung, farbe_material: i.farbe_material, personalisierung: i.personalisierung, menge: i.menge, einheit: i.einheit, einzelpreis: i.einzelpreis }));
-    if (o && +o.versand) pos.push({ bezeichnung: 'Versand', menge: 1, einheit: 'pausch.', einzelpreis: +o.versand });
-  }
+    if (+o.versand) pos.push({ bezeichnung: 'Versand', menge: 1, einheit: 'pausch.', einzelpreis: +o.versand });
+  } else pos = [];
   if (!pos.length) pos.push({ bezeichnung: '', menge: 1, einheit: 'Stk', einzelpreis: 0 });
   const label = typ === 'rechnung' ? 'Rechnung' : 'Angebot';
   if (!d && o && !o.customer_id) { toast('Bitte dem Auftrag zuerst einen Kunden zuordnen.', 'warn'); editOrder(o); return; }
@@ -672,27 +718,43 @@ window.docEditor = ({ orderId, typ, docId }) => {
   const ku = S.kleinunternehmer === '1';
   const ust = ku ? 0 : +S.ust_satz || 0;
   const m = modal({
-    title: d ? `${label} ${d.nr} bearbeiten` : `${label} erstellen`, wide: true,
+    title: d ? `${label} ${d.nr} bearbeiten` : `${label} erstellen${frei ? ' (ohne Auftrag)' : ''}`, wide: true,
     body: `<div class="form">
+      ${frei ? `<div class="f"><label>Kunde</label><div class="inline"><select name="customer_id" style="width:100%">${custOptions(d ? d.customer_id : '', '— ohne Kunde (z. B. Barverkauf) —')}</select>
+        <button type="button" class="secondary small fixed" id="dNewK">+ Neuer Kunde</button></div></div>` : ''}
       <div class="f s3"><label>Datum</label><input type="date" name="datum" value="${esc(v.datum || '')}"></div>
       ${typ === 'rechnung' ? `<div class="f s3"><label>Leistungsdatum</label><input type="date" name="leistungsdatum" value="${esc(v.leistungsdatum || '')}"></div>` : ''}
       <div class="f s3"><label>${typ === 'rechnung' ? 'Fällig am' : 'Gültig bis'}</label><input type="date" name="faellig" value="${esc(v.faellig || '')}"></div>
       ${typ === 'rechnung' ? `<div class="f s3"><label>Bereits angezahlt €</label><input name="anzahlung" inputmode="decimal" value="${v.anzahlung ? esc(String(v.anzahlung).replace('.', ',')) : ''}"></div>` : ''}
+      ${frei && !d && typ === 'rechnung' ? `<div class="f chk"><input type="checkbox" id="dPaid"><label for="dPaid">Sofort bezahlt (z. B. Barverkauf am Markt) – Rechnung wird gleich als bezahlt markiert</label></div>` : ''}
       <div class="f"><label>Einleitungstext</label><textarea name="einleitung" rows="2">${esc(v.einleitung || '')}</textarea></div>
       <div class="f"><label>Positionen</label>
         <div class="tblwrap" style="border:1px solid var(--line);border-radius:10px"><table class="tbl posed"><thead><tr><th>Bezeichnung / Beschreibung</th><th>Farbe / Material</th><th>Personalisierung</th><th class="num">Menge</th><th>Einh.</th><th class="num">Einzelpreis</th><th class="num">Gesamt</th><th></th></tr></thead>
         <tbody id="dpos"></tbody><tfoot><tr><td colspan="6" class="right">${ku ? 'Gesamtbetrag' : 'Summe netto'}</td><td class="num" id="dsum"></td><td></td></tr></tfoot></table></div>
-        <div><button type="button" class="small secondary" id="dAdd">+ Position</button></div></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="small secondary" id="dAdd">+ Position</button><button type="button" class="small secondary" id="dProd">📦 + aus Produktkatalog</button></div>
+        ${typ === 'rechnung' ? '<div class="hint">Produkte aus dem Katalog werden beim Erstellen der Rechnung automatisch vom Lagerbestand abgebucht (bei Storno wieder zurückgebucht).</div>' : ''}</div>
       <div class="f"><label>Schlusstext</label><textarea name="schluss" rows="3">${esc(v.schluss || '')}</textarea>
         <div class="hint">Platzhalter: {nr} {datum} {faellig} {gueltig} {gesamt} {zahlbetrag} {kunde}</div></div>
-      ${d ? `<div class="f chk"><input type="checkbox" id="kuAkt" name="kunde_aktualisieren"><label for="kuAkt">Kundenanschrift aus der Kundenkartei neu übernehmen</label></div>` : ''}
+      ${d && !frei ? `<div class="f chk"><input type="checkbox" id="kuAkt" name="kunde_aktualisieren"><label for="kuAkt">Kundenanschrift aus der Kundenkartei neu übernehmen</label></div>` : ''}
     </div>`,
     footer: `<span class="muted small">${ku ? 'Kleinunternehmer – ohne USt.' : `zzgl. ${num(ust)} % USt.`}</span><span class="spacer"></span>
       <button class="secondary" data-cancel>Abbrechen</button><button data-save>${d ? 'Speichern & PDF neu erzeugen' : `${label} erstellen`}</button>`,
   });
+  // bereits auf dieser Rechnung gebuchte Menge zählt beim Prüfen des Lagers mit
+  const booked = {};
+  if (d && typ === 'rechnung' && d.status !== 'storniert') d.positionen.forEach((p) => { if (p.product_id) booked[p.product_id] = (booked[p.product_id] || 0) + (+p.menge || 0); });
+  const stockNote = (p) => {
+    if (!p.product_id) return '';
+    const pr = byId(D.products, p.product_id);
+    if (!pr) return '<div class="tiny muted">📦 Produkt gelöscht</div>';
+    if (pr.bestand == null) return '<div class="tiny muted">📦 aus Katalog</div>';
+    const need = pos.filter((x) => x.product_id === p.product_id).reduce((s, x) => s + (+x.menge || 0), 0);
+    const avail = pr.bestand + (booked[p.product_id] || 0);
+    return `<div class="tiny ${typ === 'rechnung' && need > avail ? 'err' : 'muted'}">📦 Lager: ${num(avail)} ${esc(pr.einheit || 'Stk')}${typ === 'rechnung' && need > avail ? ' – nicht genug auf Lager!' : ''}</div>`;
+  };
   const draw = () => {
     $('#dpos', m.el).innerHTML = pos.map((p, i) => `<tr data-i="${i}">
-      <td><input data-f="bezeichnung" value="${esc(p.bezeichnung)}" placeholder="Bezeichnung"><input data-f="beschreibung" class="desc" value="${esc(p.beschreibung || '')}" placeholder="Beschreibung"></td>
+      <td><input data-f="bezeichnung" value="${esc(p.bezeichnung)}" placeholder="Bezeichnung"><input data-f="beschreibung" class="desc" value="${esc(p.beschreibung || '')}" placeholder="Beschreibung">${stockNote(p)}</td>
       <td><input data-f="farbe_material" value="${esc(p.farbe_material || '')}"></td><td><input data-f="personalisierung" value="${esc(p.personalisierung || '')}"></td>
       <td class="c-menge"><input data-f="menge" class="right" inputmode="decimal" value="${esc(num(p.menge))}"></td>
       <td class="c-einheit"><input data-f="einheit" value="${esc(p.einheit || '')}"></td>
@@ -709,15 +771,36 @@ window.docEditor = ({ orderId, typ, docId }) => {
   });
   $('#dpos', m.el).addEventListener('click', (e) => { if (e.target.closest('[data-rm]')) { pos.splice(+e.target.closest('tr').dataset.i, 1); draw(); } });
   $('#dAdd', m.el).onclick = () => { pos.push({ bezeichnung: '', menge: 1, einheit: 'Stk', einzelpreis: 0 }); draw(); };
+  $('#dProd', m.el).onclick = () => pickProduct((pr) => {
+    const same = pos.find((p) => p.product_id === pr.id && !(p.personalisierung || '').trim());
+    if (same) same.menge = (+same.menge || 0) + 1;
+    else {
+      const empty = pos.length === 1 && !(pos[0].bezeichnung || '').trim();
+      if (empty) pos.length = 0;
+      pos.push(prodToPos(pr));
+    }
+    draw();
+  });
+  if ($('#dNewK', m.el)) $('#dNewK', m.el).onclick = () => editCustomer(null, (row) => { const sel = $('[name=customer_id]', m.el); sel.innerHTML = custOptions(row.id, '— ohne Kunde (z. B. Barverkauf) —'); sel.value = row.id; });
+  const paid = $('#dPaid', m.el);
+  if (paid) paid.onchange = () => {
+    const ta = $('[name=schluss]', m.el);
+    const a = S.rechnung_schluss || ''; const b = S.rechnung_schluss_bezahlt || '';
+    if (paid.checked && ta.value === a) ta.value = b;
+    if (!paid.checked && ta.value === b) ta.value = a;
+  };
   $('[data-cancel]', m.el).onclick = m.close;
   $('[data-save]', m.el).onclick = async (e) => {
-    e.target.disabled = true;
     const g = (n) => { const x = $(`[name=${n}]`, m.el); return x ? x.value : undefined; };
     const body = { datum: g('datum'), faellig: g('faellig'), einleitung: g('einleitung'), schluss: g('schluss'), positionen: pos.filter((p) => (p.bezeichnung || '').trim()) };
     if (typ === 'rechnung') { body.leistungsdatum = g('leistungsdatum'); body.anzahlung = parseNum(g('anzahlung')) || 0; }
+    if (frei) body.customer_id = +g('customer_id') || 0;
+    if (typ === 'rechnung' && $$('#dpos .err', m.el).length && !confirm('Für mindestens ein Produkt ist nicht genug auf Lager. Trotzdem speichern? (Der Bestand wird dann negativ.)')) return;
+    e.target.disabled = true;
     try {
       let r;
-      if (d) { body.kunde_aktualisieren = $('#kuAkt', m.el).checked; r = await api('PUT', `/api/documents/${d.id}`, body); r.id = d.id; }
+      if (d) { const ka = $('#kuAkt', m.el); body.kunde_aktualisieren = !!(ka && ka.checked); r = await api('PUT', `/api/documents/${d.id}`, body); r.id = d.id; }
+      else if (frei) { body.typ = typ; body.bezahlt = !!(paid && paid.checked); r = await api('POST', '/api/documents', body); toast(`${label} ${r.nr} erstellt`); }
       else { body.typ = typ; r = await api('POST', `/api/orders/${orderId}/documents`, body); toast(`${label} ${r.nr} erstellt`); }
       warnIf(r);
       m.close();
@@ -770,7 +853,7 @@ let dFilter = { typ: 'rechnung', status: '', jahr: String(new Date().getFullYear
 routes.rechnungen = () => {
   const jahre = [...new Set(D.documents.map((d) => (d.datum || '').slice(0, 4)).filter(Boolean).concat(String(new Date().getFullYear())))].sort().reverse();
   view.innerHTML = `<div class="pagehead"><h1>Rechnungen & Angebote</h1>
-      <a class="button secondary" id="csvR" href="#">⬇ Rechnungsliste (CSV)</a></div>
+      <a class="button secondary" id="csvR" href="#">⬇ Rechnungsliste (CSV)</a><button id="dNew">+ Neue Rechnung</button></div>
     <div class="toolbar">
       <select id="dTyp">${opt('rechnung', 'Rechnungen', dFilter.typ)}${opt('angebot', 'Angebote', dFilter.typ)}</select>
       <select id="dSt">${opt('', 'Alle Status', dFilter.status)}${['offen', 'bezahlt', 'storniert', 'angenommen', 'abgelehnt'].map((s) => opt(s, DOC_STATUS[s], dFilter.status)).join('')}${opt('ueber', 'überfällig', dFilter.status)}</select>
@@ -779,7 +862,7 @@ routes.rechnungen = () => {
     </div>
     <div class="tiles" id="dTiles"></div>
     <div class="card"><div class="tblwrap" id="dList"></div></div>
-    <p class="muted small">Neue Rechnungen und Angebote erstellst du direkt im jeweiligen Auftrag.</p>`;
+    <p class="muted small">Rechnungen zu Aufträgen erstellst du im jeweiligen Auftrag. Über „+ Neue Rechnung“ verkaufst du fertige Produkte aus dem Produktkatalog direkt – ganz ohne Auftrag.</p>`;
   const draw = () => {
     const q = dFilter.q.toLowerCase();
     const list = D.documents.filter((d) => d.typ === dFilter.typ && (!dFilter.jahr || (d.datum || '').startsWith(dFilter.jahr))
@@ -793,13 +876,16 @@ routes.rechnungen = () => {
     $('#dList').innerHTML = list.length ? `<table class="tbl"><thead><tr><th>Nummer</th><th>Datum</th><th>Kunde</th><th>Auftrag</th><th class="num">Netto</th><th class="num">Brutto</th><th>${dFilter.typ === 'rechnung' ? 'Fällig' : 'Gültig bis'}</th><th>Status</th><th></th></tr></thead><tbody>
       ${list.map((d) => { const o = byId(D.orders, d.order_id); const ue = d.typ === 'rechnung' && d.status === 'offen' && d.faellig < today();
         return `<tr class="click" data-id="${d.id}"><td class="nowrap"><b>${esc(d.nr)}</b></td><td class="nowrap">${dmy(d.datum)}</td><td>${esc(kname(d.kunde))}</td>
-        <td>${o ? `<span class="muted">${esc(o.nr)}</span> ${esc(o.titel)}` : '–'}</td><td class="num">${eur(d.netto)}</td><td class="num">${eur(d.brutto)}</td>
+        <td>${o ? `<span class="muted">${esc(o.nr)}</span> ${esc(o.titel)}` : '<span class="muted">Direktverkauf</span>'}</td><td class="num">${eur(d.netto)}</td><td class="num">${eur(d.brutto)}</td>
         <td class="nowrap ${ue ? 'err' : ''}">${dmy(d.faellig)}</td><td>${chip(ue ? 'ueberfaellig' : d.status, ue ? 'überfällig' : DOC_STATUS[d.status])}</td>
         <td class="act"><a class="icon" target="_blank" href="/api/documents/${d.id}/pdf" onclick="event.stopPropagation()" title="PDF">📄</a></td></tr>`; }).join('')}
       </tbody></table>` : '<div class="empty">Keine Einträge.</div>';
     $$('#dList tr[data-id]').forEach((tr) => tr.onclick = () => docActions(+tr.dataset.id));
   };
-  $('#dTyp').onchange = (e) => { dFilter.typ = e.target.value; draw(); };
+  const newBtn = () => { $('#dNew').textContent = dFilter.typ === 'rechnung' ? '+ Neue Rechnung' : '+ Neues Angebot'; };
+  $('#dNew').onclick = () => docEditor({ typ: dFilter.typ });
+  newBtn();
+  $('#dTyp').onchange = (e) => { dFilter.typ = e.target.value; newBtn(); draw(); };
   $('#dSt').onchange = (e) => { dFilter.status = e.target.value; draw(); };
   $('#dJahr').onchange = (e) => { dFilter.jahr = e.target.value; draw(); };
   $('#dQ').oninput = (e) => { dFilter.q = e.target.value; draw(); };
@@ -885,7 +971,7 @@ routes.rechner = () => {
     <div class="card"><div class="ch"><h3>Eingaben</h3></div><div class="cb"><form class="form" id="rcForm" autocomplete="off">
       <div class="f s6"><label>Maschine</label><select name="machine_id" style="width:100%">${machineOpts(rcState.machine_id)}</select></div>
       <div class="f s6"><label>Druck-/Laserzeit (Std:Min)</label><input name="dauer_h" data-hours placeholder="z. B. 3:20" value="${esc(rcState.dauer_h)}"></div>
-      <div class="f s8"><label>Material</label><select name="material_id" style="width:100%">${materialOpts(rcState.material_id)}</select></div>
+      <div class="f s8"><label>Material</label><select name="material_id" style="width:100%">${materialOpts(rcState.material_id, rcState.machine_id)}</select></div>
       <div class="f s4"><label id="rcMengeL">Menge</label><input name="menge" inputmode="decimal" value="${esc(rcState.menge)}"></div>
       <div class="f s6"><label>Arbeitszeit (Std:Min)</label><input name="arbeit_h" placeholder="Design, Nachbearbeitung …" value="${esc(rcState.arbeit_h)}"></div>
       <div class="f s6"><label>Wer arbeitet?</label><select name="person_id" style="width:100%">${personOpts(rcState.person_id)}</select></div>
@@ -925,7 +1011,8 @@ routes.rechner = () => {
     } catch (e) { $('#rcOut').innerHTML = `<div class="err">${esc(e.message)}</div>`; }
   };
   form.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(calc, 250); });
-  form.addEventListener('change', calc);
+  form.addEventListener('change', (e) => { if (e.target.name === 'machine_id') syncMaterialSelect(form); calc(); });
+  syncMaterialSelect(form);
   calc();
 };
 
@@ -1076,6 +1163,94 @@ window.editPart = (id, machineId) => {
 };
 
 // ======================================================================
+//  Produkte (Katalog fertiger Artikel mit Lagerbestand)
+// ======================================================================
+let prFilter = { q: '', kat: '', lager: '' };
+routes.produkte = () => {
+  const kats = [...new Set(D.products.map((p) => p.kategorie).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'de'));
+  view.innerHTML = `<div class="pagehead"><h1>Produkte</h1><span class="sub">Fertige Artikel zum direkten Verkaufen · Lagerbestand wird bei Rechnungen automatisch abgebucht</span>
+      <button class="secondary" id="prSell">🧾 Verkauf / Rechnung</button><button onclick="editProduct()">+ Produkt</button></div>
+    <div class="toolbar">
+      <input type="search" id="prQ" placeholder="Name, Artikelnummer, Farbe …" value="${esc(prFilter.q)}">
+      <select id="prKat">${opt('', 'Alle Kategorien', prFilter.kat)}${kats.map((k) => opt(k, k, prFilter.kat)).join('')}</select>
+      <select id="prLager">${opt('', 'Alle', prFilter.lager)}${opt('auf', 'auf Lager', prFilter.lager)}${opt('leer', 'ausverkauft', prFilter.lager)}${opt('inaktiv', 'inaktiv', prFilter.lager)}</select>
+    </div>
+    <div class="tiles" id="prTiles"></div>
+    <div class="card"><div class="tblwrap" id="prList"></div></div>`;
+  const draw = () => {
+    const q = prFilter.q.toLowerCase();
+    const list = D.products.filter((p) => (prFilter.lager === 'inaktiv' ? !p.aktiv : (p.aktiv || prFilter.lager === ''))
+      && (!prFilter.kat || p.kategorie === prFilter.kat)
+      && (prFilter.lager !== 'auf' || (p.bestand != null && p.bestand > 0))
+      && (prFilter.lager !== 'leer' || (p.bestand != null && p.bestand <= 0))
+      && (!q || `${p.artikelnr || ''} ${p.name} ${p.kategorie || ''} ${p.farbe_material || ''} ${p.beschreibung || ''}`.toLowerCase().includes(q)))
+      .sort((a, b) => (b.aktiv - a.aktiv) || (a.kategorie || '').localeCompare(b.kategorie || '', 'de') || a.name.localeCompare(b.name, 'de'));
+    const aktiv = D.products.filter((p) => p.aktiv && p.bestand != null);
+    const stk = aktiv.reduce((s, p) => s + Math.max(0, p.bestand), 0);
+    const wert = aktiv.reduce((s, p) => s + Math.max(0, p.bestand) * (+p.preis || 0), 0);
+    const leer = aktiv.filter((p) => p.bestand <= 0).length;
+    $('#prTiles').innerHTML = `<div class="tile"><span>Produkte</span><b>${D.products.filter((p) => p.aktiv).length}</b></div>
+      <div class="tile"><span>Stück auf Lager</span><b>${num(stk)}</b></div>
+      <div class="tile"><span>Lagerwert (Verkaufspreis)</span><b>${eur(wert)}</b><small>netto</small></div>
+      <div class="tile"><span>ausverkauft</span><b class="${leer ? 'warnc' : ''}">${leer}</b></div>`;
+    $('#prList').innerHTML = list.length ? `<table class="tbl"><thead><tr><th>Produkt</th><th>Kategorie</th><th>Farbe / Material</th><th class="num">Preis</th><th class="num">Bestand</th><th></th></tr></thead><tbody>
+      ${list.map((p) => `<tr class="click" data-id="${p.id}" style="${p.aktiv ? '' : 'opacity:.5'}"><td>${p.artikelnr ? `<span class="muted small">${esc(p.artikelnr)}</span> ` : ''}<b>${esc(p.name)}</b>${p.beschreibung ? `<div class="sub">${esc(p.beschreibung)}</div>` : ''}</td>
+        <td>${esc(p.kategorie || '')}</td><td>${esc(p.farbe_material || '')}</td>
+        <td class="num nowrap">${eur(p.preis)}${p.einheit && p.einheit !== 'Stk' ? ` / ${esc(p.einheit)}` : ''}${+p.herstellkosten ? `<div class="tiny muted">Kosten ${eur(p.herstellkosten)}</div>` : ''}</td>
+        <td class="num nowrap ${p.bestand != null && p.bestand <= 0 ? 'err' : ''}">${p.bestand == null ? '<span class="dim">–</span>' : num(p.bestand) + ' ' + esc(p.einheit || 'Stk')}</td>
+        <td class="act nowrap"><button class="icon" data-stock title="Lagerzugang buchen">＋</button><button class="icon" data-sell title="Verkaufen (Rechnung erstellen)">🧾</button></td></tr>`).join('')}
+      </tbody></table>` : `<div class="empty">${D.products.length ? 'Nichts gefunden.' : 'Noch keine Produkte – lege deine fertigen Artikel an, um sie schnell abrechnen zu können.'}</div>`;
+    $$('#prList tr[data-id]').forEach((tr) => tr.onclick = (e) => {
+      const p = byId(D.products, +tr.dataset.id);
+      if (e.target.closest('[data-sell]')) docEditor({ typ: 'rechnung', preset: [prodToPos(p)] });
+      else if (e.target.closest('[data-stock]')) stockIn(p);
+      else editProduct(p.id);
+    });
+  };
+  $('#prQ').oninput = (e) => { prFilter.q = e.target.value; draw(); };
+  $('#prKat').onchange = (e) => { prFilter.kat = e.target.value; draw(); };
+  $('#prLager').onchange = (e) => { prFilter.lager = e.target.value; draw(); };
+  $('#prSell').onclick = () => docEditor({ typ: 'rechnung' });
+  draw();
+};
+window.editProduct = (id) => {
+  const p = id ? byId(D.products, id) : { einheit: 'Stk', aktiv: 1 };
+  const kats = [...new Set(D.products.map((x) => x.kategorie).filter(Boolean))];
+  openForm({
+    title: id ? `${p.name} bearbeiten` : 'Neues Produkt', wide: true,
+    fields: [
+      { k: 'name', l: 'Produktname (steht auf der Rechnung)', s: 8 }, { k: 'artikelnr', l: 'Artikelnummer (optional)', s: 4 },
+      { k: 'kategorie', l: 'Kategorie', s: 6, list: kats.length ? kats : ['Anhänger', 'Deko', 'Geschenke', 'Gravur', 'Untersetzer'] },
+      { k: 'farbe_material', l: 'Farbe / Material', s: 6 },
+      { k: 'beschreibung', l: 'Beschreibung (steht auf der Rechnung)', t: 'textarea', rows: 2 },
+      { k: 'preis', l: `Verkaufspreis €${S.kleinunternehmer === '1' ? '' : ' (netto)'}`, t: 'num', s: 4 },
+      { k: 'einheit', l: 'Einheit', s: 4, list: ['Stk', 'Set', 'Paar', 'm', 'pausch.'] },
+      { k: 'herstellkosten', l: 'Herstellkosten € (optional)', t: 'num', s: 4, hint: 'z. B. aus dem Schnellrechner' },
+      { k: 'bestand', l: 'Lagerbestand', t: 'num', s: 4, hint: 'leer = Lager nicht mitzählen' },
+      { k: 'notizen', l: 'Notizen (intern)', t: 'textarea', rows: 2, s: 8 },
+      { k: 'aktiv', l: 'aktiv (im Katalog auswählbar)', t: 'check' },
+    ],
+    values: p,
+    onSave: async (v) => { await api(id ? 'PUT' : 'POST', id ? `/api/t/products/${id}` : '/api/t/products', v); await refresh(); toast('Gespeichert'); },
+    onDelete: id ? async () => { await api('DELETE', `/api/t/products/${id}`); await refresh(); } : null,
+  });
+};
+function stockIn(p) {
+  openForm({
+    title: `Lagerzugang: ${p.name}`, saveLabel: 'Buchen',
+    fields: [
+      { t: 'html', html: `<div class="muted">Aktueller Bestand: <b>${p.bestand == null ? 'wird nicht gezählt' : num(p.bestand) + ' ' + esc(p.einheit || 'Stk')}</b></div>` },
+      { k: 'zugang', l: 'Neu hergestellt / hinzugekommen', t: 'num', s: 6, hint: 'negativ = Abgang (z. B. Bruch, Geschenk)' },
+    ],
+    onSave: async (v) => {
+      if (!v.zugang) throw new Error('Bitte eine Menge eingeben');
+      await api('PUT', `/api/t/products/${p.id}`, { bestand: r2((+p.bestand || 0) + v.zugang) });
+      await refresh(); toast('Lagerbestand aktualisiert');
+    },
+  });
+}
+
+// ======================================================================
 //  Material
 // ======================================================================
 routes.material = () => {
@@ -1146,6 +1321,7 @@ function setFirma() {
     { k: 'akzentfarbe', l: 'Akzentfarbe', t: 'color', s: 3 }, { k: 'angebot_gueltig_tage', l: 'Angebot gültig (Tage)', t: 'num', s: 3 },
     { k: 'prefix_rechnung', l: 'Präfix Rechnungen', s: 3 }, { k: 'prefix_angebot', l: 'Präfix Angebote', s: 3 },
     { k: 'rechnung_einleitung', l: 'Rechnung – Einleitung', t: 'textarea', rows: 2 }, { k: 'rechnung_schluss', l: 'Rechnung – Schlusstext', t: 'textarea', rows: 3, hint: 'Platzhalter: {nr} {faellig} {gesamt} {zahlbetrag} {kunde} {datum}' },
+    { k: 'rechnung_schluss_bezahlt', l: 'Rechnung – Schlusstext bei „sofort bezahlt“ (z. B. Barverkauf)', t: 'textarea', rows: 2, hint: 'Platzhalter: {nr} {gesamt} {kunde} {datum}' },
     { k: 'angebot_einleitung', l: 'Angebot – Einleitung', t: 'textarea', rows: 2 }, { k: 'angebot_schluss', l: 'Angebot – Schlusstext', t: 'textarea', rows: 2, hint: 'Platzhalter: {gueltig}' },
     { k: 'fusszeile', l: 'Zusätzliche Fußzeile (optional)' },
     { t: 'h4', l: 'Kundenbestellung (Bestellformular)' },

@@ -36,6 +36,7 @@ DEFAULTS = {
     "logo": "",
     "rechnung_einleitung": "Vielen Dank für Ihren Auftrag! Wir erlauben uns, folgende Leistungen in Rechnung zu stellen:",
     "rechnung_schluss": "Bitte überweisen Sie den Betrag von {zahlbetrag} bis {faellig} unter Angabe der Rechnungsnummer {nr} auf das unten angeführte Konto.\n\nVielen Dank und liebe Grüße!",
+    "rechnung_schluss_bezahlt": "Der Betrag von {gesamt} wurde dankend erhalten.\n\nVielen Dank für Ihren Einkauf!",
     "angebot_einleitung": "Vielen Dank für Ihre Anfrage! Gerne bieten wir Ihnen folgende Leistungen an:",
     "angebot_schluss": "Dieses Angebot ist gültig bis {gueltig}. Wir freuen uns auf Ihren Auftrag!",
     "fusszeile": "",

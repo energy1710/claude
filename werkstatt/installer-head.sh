@@ -7,7 +7,7 @@
 # =====================================================================
 set -Eeuo pipefail
 
-APP_VERSION="1.1.0"
+APP_VERSION="1.2.0"
 APP_PORT=8099
 LOG=/tmp/werkstatt-install.log
 SELF="$(readlink -f "$0")"
