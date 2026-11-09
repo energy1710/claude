@@ -29,6 +29,16 @@ Läuft als eigener Container (LXC) auf Proxmox.
 
 ## Versionen
 
+### 1.4.0
+- **Abgeschlossene Aufträge im Ordnersystem**: Sobald ein Auftrag „Bezahlt“ ist (Status oder Rechnung bezahlt), wird
+  sein Ordner nach `Abgeschlossen/<Jahr>/` verschoben (Jahr = Auftragseingang). Wird der Auftrag wieder geöffnet,
+  kommt der Ordner zurück an den ursprünglichen Platz.
+- Sonderfälle per Knopf im Auftrag: „📦 Nach Abgeschlossen verschieben“ / „↩ Zurück zu offenen Aufträgen“
+  (gilt, bis sich der Status das nächste Mal ändert).
+- Bestehende bezahlte Aufträge werden nach dem Update automatisch mit verschoben. Klappt das Verschieben nicht
+  (NAS aus, Datei geöffnet), wird es alle 15 Minuten erneut versucht. Ein- und ausschaltbar, Ordnername änderbar
+  unter Einstellungen → Netzlaufwerk & Backup.
+
 ### 1.3.0
 - **Schnellrechner mit mehreren Zeilen**: beliebig viele Drucke/Laser (Maschine, Zeit, Material, Menge), Arbeitszeiten
   (Person, Tätigkeit, Zeit) und Zubehör (Bezeichnung, Betrag), jeweils mit + / −. „Als neuen Auftrag anlegen“

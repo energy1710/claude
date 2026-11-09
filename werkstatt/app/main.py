@@ -16,9 +16,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from . import backup, bestellung, calc, db, ha, images, pdf, seed, settings, storage
+from . import archiv, backup, bestellung, calc, db, ha, images, pdf, seed, settings, storage
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 for _noisy in ("smbprotocol", "smbclient", "spnego", "fontTools", "fpdf"):
@@ -35,6 +35,7 @@ async def lifespan(app):
     if os.environ.get("WERKSTATT_NO_BACKUP") != "1":
         backup.start_scheduler()
         ha.start_scheduler()
+        archiv.start_scheduler()
     yield
 
 
@@ -255,11 +256,20 @@ def update(table: str, rid: int, body: dict):
         sets = ", ".join(f"{k}=?" for k in data)
         if table in ("customers", "orders"):
             sets += ", updated_at=CURRENT_TIMESTAMP"
+        if table == "orders" and data.get("status") and data["status"] != old["status"]:
+            sets += ", ordner_fix=NULL"
+        if table == "orders" and "ordner" in data and data["ordner"] != old["ordner"]:
+            sets += ", ordner_offen=NULL"
         c.execute(f"UPDATE {table} SET {sets} WHERE id=?", [*data.values(), rid])
         row = db.one(c.execute(f"SELECT * FROM {table} WHERE id=?", (rid,)))
         if table == "order_jobs":
             _stock(c, row, -1)
-    return {"row": row}
+    warn = None
+    if table == "orders" and data.get("status") and data["status"] != old["status"]:
+        warn = archiv.sync_order_soon(rid)
+        with db.conn() as c:
+            row = db.one(c.execute("SELECT * FROM orders WHERE id=?", (rid,)))
+    return {"row": row, "warning": warn}
 
 
 @app.delete("/api/t/{table}/{rid}")
@@ -452,6 +462,33 @@ def create_folder(oid: int):
         return {"ordner": rel, "pfad": storage.FS("auftraege").unc(rel)}
     except storage.StorageError as e:
         raise HTTPException(400, str(e))
+
+
+class AbschlussIn(BaseModel):
+    abgeschlossen: bool
+
+
+@app.post("/api/orders/{oid}/folder/abschluss")
+def folder_abschluss(oid: int, body: AbschlussIn):
+    """Sonderfall: Ordner von Hand nach „Abgeschlossen“ verschieben bzw. zurückholen."""
+    if not _storage_configured():
+        raise HTTPException(400, "Netzlaufwerk ist nicht eingerichtet")
+    with db.conn() as c:
+        o, _ = _order_ctx(c, oid)
+        if not o["ordner"]:
+            raise HTTPException(400, "Dieser Auftrag hat noch keinen Ordner")
+        c.execute("UPDATE orders SET ordner_fix=? WHERE id=?", (1 if body.abgeschlossen else 0, oid))
+    warn = archiv.sync_order(oid, force=True)
+    with db.conn() as c:
+        o = db.one(c.execute("SELECT ordner FROM orders WHERE id=?", (oid,)))
+    return {"ordner": o["ordner"], "warning": warn}
+
+
+@app.post("/api/archiv/sync")
+def archiv_sync():
+    if not _storage_configured():
+        raise HTTPException(400, "Netzlaufwerk ist nicht eingerichtet")
+    return archiv.sync_all()
 
 
 @app.get("/api/orders/{oid}/files")
@@ -826,7 +863,7 @@ def update_doc(did: int, body: DocUpd):
                 sets["bezahlt_am"] = body.bezahlt_am or d.get("bezahlt_am") or date.today().isoformat()
                 if d["order_id"] and d["typ"] == "rechnung":
                     c.execute("UPDATE orders SET status='bezahlt', zahlungsstatus='bezahlt', zahlungsdatum=?,"
-                              " updated_at=CURRENT_TIMESTAMP WHERE id=? AND status!='storniert'",
+                              " ordner_fix=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=? AND status!='storniert'",
                               (sets["bezahlt_am"], d["order_id"]))
             elif body.status == "offen":
                 sets["bezahlt_am"] = None
@@ -873,6 +910,8 @@ def update_doc(did: int, body: DocUpd):
         if sets:
             c.execute(f"UPDATE documents SET {', '.join(f'{k}=?' for k in sets)} WHERE id=?", [*sets.values(), did])
     warn = _render_doc(did) if rerender else None
+    if body.status == "bezahlt" and d["order_id"] and d["typ"] == "rechnung":
+        warn = " ".join(x for x in (warn, archiv.sync_order_soon(d["order_id"])) if x) or None
     return {"ok": True, "warning": warn}
 
 

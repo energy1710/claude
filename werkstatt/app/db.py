@@ -258,7 +258,9 @@ def init():
 COLUMNS = {
     "orders": {"vertrieb": "TEXT", "uebergabe": "TEXT", "versand": "REAL", "zahlungsart": "TEXT",
                "anzahlung": "REAL", "zahlungsstatus": "TEXT DEFAULT 'offen'", "zahlungsdatum": "TEXT",
-               "wuensche": "TEXT"},
+               "wuensche": "TEXT",
+               "ordner_fix": "INTEGER",          # Ordner von Hand: 1 = abgeschlossen, 0 = offen, leer = nach Status
+               "ordner_offen": "TEXT"},          # ursprünglicher Pfad vor dem Verschieben ins Archiv
     "order_items": {"farbe_material": "TEXT", "personalisierung": "TEXT"},
     "documents": {"anzahlung": "REAL"},
     "machines": {"ha_liste": "TEXT"},

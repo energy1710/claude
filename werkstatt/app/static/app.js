@@ -341,7 +341,7 @@ window.newOrder = (preset = {}, after) => openForm({
 function editOrder(o) {
   openForm({
     title: `Auftrag ${o.nr} bearbeiten`, fields: orderFields(), values: o, wide: true,
-    onSave: async (v) => { await api('PUT', `/api/t/orders/${o.id}`, v); await refresh(); },
+    onSave: async (v) => { warnIf(await api('PUT', `/api/t/orders/${o.id}`, v)); await refresh(); },
     onDelete: async () => { await api('DELETE', `/api/t/orders/${o.id}`); await reload(); location.hash = '#auftraege'; },
   });
 }
@@ -459,7 +459,14 @@ routes.auftrag = async (id) => {
     </div>
   </div></div>`;
 
-  $('#oStatus').onchange = async (e) => { try { await api('PUT', `/api/t/orders/${o.id}`, { status: e.target.value }); await refresh(); toast('Status geändert'); } catch (err) { fail(err); } };
+  $('#oStatus').onchange = async (e) => {
+    try {
+      const r = await api('PUT', `/api/t/orders/${o.id}`, { status: e.target.value }); await refresh();
+      const n = byId(D.orders, o.id);
+      toast(n && n.ordner !== o.ordner ? (archivedPath(n.ordner) ? 'Status geändert – Ordner nach „' + (S.ordner_abschluss_name || 'Abgeschlossen') + '“ verschoben' : 'Status geändert – Ordner zurück zu den offenen Aufträgen') : 'Status geändert');
+      warnIf(r);
+    } catch (err) { fail(err); }
+  };
   $('#oEdit').onclick = () => editOrder(o);
 
   // Positionen inline bearbeiten
@@ -504,6 +511,19 @@ window.bestellungToFolder = async (oid) => {
   try { const r = await api('POST', `/api/orders/${oid}/bestellung/to-folder`); toast(`${r.name} im Auftragsordner gespeichert`); folderView(byId(D.orders, oid), ''); } catch (e) { fail(e); }
 };
 
+// liegt der Pfad im Abgeschlossen-Ordner?
+function archivedPath(rel) {
+  const root = String(S.ordner_abschluss_name || 'Abgeschlossen').split(/[\\/]+/).filter(Boolean).map((x) => x.toLowerCase());
+  const p = String(rel || '').split(/[\\/]+/).filter(Boolean).map((x) => x.toLowerCase());
+  return p.length > root.length && root.every((x, i) => p[i] === x);
+}
+async function moveFolder(o, abgeschlossen) {
+  try {
+    const r = await api('POST', `/api/orders/${o.id}/folder/abschluss`, { abgeschlossen });
+    if (r.warning) toast(r.warning, 'warn', 8000); else toast(abgeschlossen ? 'Ordner verschoben' : 'Ordner zurückgeholt');
+    await refresh();
+  } catch (e) { fail(e); }
+}
 async function folderView(o, sub) {
   const box = $('#folderBox');
   if (!box) return;
@@ -519,7 +539,12 @@ async function folderView(o, sub) {
     box.innerHTML = `<div class="cb small err">${esc(e.message)}</div>`; return;
   }
   const crumbs = sub ? sub.split('/').filter(Boolean) : [];
-  box.innerHTML = `<div class="cb" style="padding-bottom:6px"><div class="pathbox"><code title="${esc(r.pfad)}">${esc(r.pfad)}</code><button class="small secondary" id="cpPath" title="Pfad kopieren → im Windows-Explorer oben einfügen">📋 Kopieren</button></div>
+  const arch = archivedPath(o.ordner);
+  const archName = esc(S.ordner_abschluss_name || 'Abgeschlossen');
+  const archBar = `<div class="cb small" style="padding-bottom:0;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      ${arch ? `<span class="chip st-bezahlt nodot">📦 in „${archName}“</span><span class="spacer"></span><button class="small secondary" id="fArch" data-to="0">↩ Zurück zu offenen Aufträgen</button>`
+        : `<span class="spacer"></span><button class="small secondary" id="fArch" data-to="1" title="${S.ordner_abschluss === '1' ? 'passiert bei „Bezahlt“ automatisch – hier für Sonderfälle' : ''}">📦 Nach „${archName}“ verschieben</button>`}</div>`;
+  box.innerHTML = archBar + `<div class="cb" style="padding-bottom:6px"><div class="pathbox"><code title="${esc(r.pfad)}">${esc(r.pfad)}</code><button class="small secondary" id="cpPath" title="Pfad kopieren → im Windows-Explorer oben einfügen">📋 Kopieren</button></div>
       <div class="tiny dim" style="margin-top:5px">Pfad kopieren und im Windows-Explorer in die Adresszeile einfügen.</div></div>
     ${crumbs.length ? `<div class="crumbs"><a data-sub="">${esc(o.ordner.split('/').pop())}</a>${crumbs.map((c, i) => ` › <a data-sub="${esc(crumbs.slice(0, i + 1).join('/'))}">${esc(c)}</a>`).join('')}</div>` : ''}
     ${r.fehlt ? `<div class="cb small warnc">Ordner existiert nicht (mehr). <button class="small" id="mkFolder2">Neu anlegen</button></div>` : ''}
@@ -532,6 +557,11 @@ async function folderView(o, sub) {
     <label class="drop" id="fDrop">⬆ Dateien hierher ziehen oder <u>auswählen</u> (STL, 3MF, LightBurn, SVG, Fotos …)<input type="file" multiple hidden id="fInput"></label>
     <div class="cb tiny" style="padding-top:0"><a href="javascript:void 0" id="relink">Anderen Ordner zuordnen</a></div>`;
   $('#cpPath').onclick = () => copyText(r.pfad);
+  $('#fArch').onclick = () => {
+    const to = $('#fArch').dataset.to === '1';
+    if (!confirm(to ? `Ordner jetzt nach „${S.ordner_abschluss_name || 'Abgeschlossen'}/${(o.eingang || '').slice(0, 4)}“ verschieben?` : 'Ordner zurück zu den offenen Aufträgen verschieben?')) return;
+    moveFolder(o, to);
+  };
   $$('[data-sub]', box).forEach((a) => a.onclick = (e) => { e.preventDefault(); folderView(o, a.dataset.sub); });
   if ($('#mkFolder2')) $('#mkFolder2').onclick = async () => { try { await api('POST', `/api/orders/${o.id}/folder`); folderView(o, ''); } catch (e) { fail(e); } };
   $('#relink').onclick = () => linkFolder(o);
@@ -839,7 +869,7 @@ window.docActions = (id) => {
     const a = b.dataset.a;
     try {
       if (a === 'edit') { m.close(); docEditor({ docId: d.id }); return; }
-      if (a === 'paid') await api('PUT', `/api/documents/${d.id}`, { status: 'bezahlt', bezahlt_am: $('#payDate', m.el).value });
+      if (a === 'paid') warnIf(await api('PUT', `/api/documents/${d.id}`, { status: 'bezahlt', bezahlt_am: $('#payDate', m.el).value }));
       if (a === 'storno') { if (!confirm('Rechnung stornieren?')) return; await api('PUT', `/api/documents/${d.id}`, { status: 'storniert' }); }
       if (a === 'open') await api('PUT', `/api/documents/${d.id}`, { status: 'offen' });
       if (a === 'angenommen' || a === 'abgelehnt') await api('PUT', `/api/documents/${d.id}`, { status: a });
@@ -1455,6 +1485,10 @@ async function setNetz() {
     { k: 'smb_ordner_auto', l: 'Ordner bei neuem Auftrag automatisch anlegen', t: 'check', s: 4 },
     { k: 'smb_pdf_kopieren', l: 'Rechnungen/Angebote als PDF in den Auftragsordner kopieren', t: 'check', s: 12 },
     { k: 'smb_unc_anzeige', l: 'So heißt der Ordner am Windows-PC (optional)', s: 12, ph: 'z. B. V:\\Werkstatt\\Auftraege', hint: 'Wenn ihr die Freigabe als Laufwerk verbunden habt, wird der kopierbare Pfad so angezeigt.' },
+    { t: 'h4', l: 'Abgeschlossene Aufträge' },
+    { k: 'ordner_abschluss', l: 'Ordner bezahlter Aufträge automatisch verschieben', t: 'check', s: 8 },
+    { k: 'ordner_abschluss_name', l: 'Ordnername', s: 4, ph: 'Abgeschlossen' },
+    { t: 'html', html: '<div class="hint">Bezahlte Aufträge wandern nach <b>Abgeschlossen/&lt;Jahr&gt;/</b>, wird ein Auftrag wieder geöffnet, kommt der Ordner zurück. Sonderfälle per Knopf im Auftrag. Klappt es nicht (NAS aus, Datei geöffnet), wird es alle 15 Minuten erneut versucht.</div><button type="button" class="small secondary" id="archNow" style="margin-top:8px">Jetzt alle Aufträge abgleichen</button>' },
     { t: 'h4', l: 'Automatisches Backup' },
     { k: 'backup_aktiv', l: 'Täglich automatisch sichern', t: 'check', s: 6 }, { k: 'backup_uhrzeit', l: 'Uhrzeit', t: 'time', s: 3 },
     { k: 'backup_behalten', l: 'Sicherungen behalten', t: 'num', s: 3 },
@@ -1480,6 +1514,12 @@ async function setNetz() {
   };
   $('#tA').onclick = async (e) => { await saveThen(e.target, () => test('auftraege', e.target)); };
   $('#tB').onclick = async (e) => { await saveThen(e.target, () => test('backup', e.target)); };
+  $('#archNow').onclick = async (e) => {
+    await saveThen(e.target, async () => {
+      e.target.disabled = true;
+      try { const r = await api('POST', '/api/archiv/sync'); toast(r.text + (r.fehler && r.fehler.length ? ' – ' + r.fehler[0] : ''), r.ok ? 'ok' : 'warn', 9000); await reload(); } catch (err) { fail(err); } finally { e.target.disabled = false; }
+    });
+  };
   $('#bNow').onclick = async (e) => {
     e.target.disabled = true; toast('Sicherung läuft …');
     try { const r = await api('POST', '/api/backup/run'); toast(r.text, r.ok ? 'ok' : 'warn', 8000); await reload(); setNetz(); } catch (err) { fail(err); } finally { e.target.disabled = false; }
