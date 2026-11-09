@@ -963,66 +963,129 @@ routes.kunde = (id) => {
 //  Rechner
 // ======================================================================
 let rcState = null;
+const RC_TAETIGKEIT = ['Design / Konstruktion', 'Vorbereitung', 'Nachbearbeitung', 'Bemalen / Veredeln', 'Montage', 'Verpackung & Versand'];
+const rcNewJob = (machineId) => {
+  const mid = machineId || (D.machines.find((m) => m.typ === 'fdm' && m.aktiv) || D.machines[0] || {}).id;
+  return { machine_id: mid, material_id: (D.materials.find((m) => m.aktiv && matFits(m, mid)) || {}).id, dauer_h: '', menge: '' };
+};
+const rcNewArbeit = () => ({ person_id: (D.persons.find((p) => p.aktiv) || D.persons[0] || {}).id, taetigkeit: '', stunden: '' });
+const rcNewExtra = () => ({ bezeichnung: '', betrag: '' });
+const rcMengePh = (materialId) => { const mat = byId(D.materials, +materialId); return mat ? (mat.einheit === 'kg' ? 'Gramm' : mat.einheit) : 'Menge'; };
+
 routes.rechner = () => {
-  const firstFdm = D.machines.find((m) => m.typ === 'fdm' && m.aktiv) || D.machines[0] || {};
-  rcState = rcState || { machine_id: firstFdm.id, material_id: (D.materials.find((m) => m.typ === 'filament') || {}).id, menge: '', dauer_h: '', arbeit_h: '', person_id: (D.persons[0] || {}).id, extra: '', stueck: 1, aufschlag_pct: '' };
+  rcState = rcState || { jobs: [rcNewJob()], arbeit: [rcNewArbeit()], extras: [rcNewExtra()], stueck: 1, aufschlag_pct: '' };
+  const st = rcState;
+  const rm = (g, i, n) => `<button type="button" class="icon rc-rm" data-rm="${g}" data-i="${i}" title="Zeile entfernen" ${n < 2 ? 'disabled' : ''}>−</button>`;
+  const jobRow = (j, i) => `<div class="rcrow rc-job" data-g="jobs" data-i="${i}">
+      <select name="machine_id" data-k="machine_id" aria-label="Maschine">${machineOpts(j.machine_id)}</select>
+      <input name="dauer_h" data-k="dauer_h" data-hours placeholder="Zeit z. B. 3:20" value="${esc(j.dauer_h)}" aria-label="Druck-/Laserzeit">
+      <select name="material_id" data-k="material_id" aria-label="Material">${materialOpts(j.material_id, j.machine_id)}</select>
+      <input name="menge" data-k="menge" inputmode="decimal" placeholder="${esc(rcMengePh(j.material_id))}" value="${esc(j.menge)}" aria-label="Materialmenge">
+      ${rm('jobs', i, st.jobs.length)}</div>`;
+  const arbRow = (a, i) => `<div class="rcrow rc-arb" data-g="arbeit" data-i="${i}">
+      <select data-k="person_id" aria-label="Wer">${personOpts(a.person_id)}</select>
+      <input data-k="taetigkeit" list="rcTaet" placeholder="Tätigkeit (optional)" value="${esc(a.taetigkeit)}" aria-label="Tätigkeit">
+      <input data-k="stunden" placeholder="Zeit 0:45" value="${esc(a.stunden)}" aria-label="Arbeitszeit">
+      ${rm('arbeit', i, st.arbeit.length)}</div>`;
+  const extRow = (x, i) => `<div class="rcrow rc-ext" data-g="extras" data-i="${i}">
+      <input data-k="bezeichnung" placeholder="z. B. Schlüsselringe, Geschenkbox" value="${esc(x.bezeichnung)}" aria-label="Zubehör">
+      <input data-k="betrag" inputmode="decimal" placeholder="€" value="${esc(x.betrag)}" aria-label="Betrag €">
+      ${rm('extras', i, st.extras.length)}</div>`;
   view.innerHTML = `<div class="pagehead"><h1>🧮 Schnellrechner</h1><span class="sub">Was kostet's – und was sollten wir verlangen?</span></div>
   <div class="grid2e">
-    <div class="card"><div class="ch"><h3>Eingaben</h3></div><div class="cb"><form class="form" id="rcForm" autocomplete="off">
-      <div class="f s6"><label>Maschine</label><select name="machine_id" style="width:100%">${machineOpts(rcState.machine_id)}</select></div>
-      <div class="f s6"><label>Druck-/Laserzeit (Std:Min)</label><input name="dauer_h" data-hours placeholder="z. B. 3:20" value="${esc(rcState.dauer_h)}"></div>
-      <div class="f s8"><label>Material</label><select name="material_id" style="width:100%">${materialOpts(rcState.material_id, rcState.machine_id)}</select></div>
-      <div class="f s4"><label id="rcMengeL">Menge</label><input name="menge" inputmode="decimal" value="${esc(rcState.menge)}"></div>
-      <div class="f s6"><label>Arbeitszeit (Std:Min)</label><input name="arbeit_h" placeholder="Design, Nachbearbeitung …" value="${esc(rcState.arbeit_h)}"></div>
-      <div class="f s6"><label>Wer arbeitet?</label><select name="person_id" style="width:100%">${personOpts(rcState.person_id)}</select></div>
-      <div class="f s4"><label>Zubehör / Extras €</label><input name="extra" inputmode="decimal" value="${esc(rcState.extra)}"></div>
-      <div class="f s4"><label>Ergibt Stück</label><input name="stueck" inputmode="decimal" value="${esc(rcState.stueck)}"></div>
-      <div class="f s4"><label>Aufschlag %</label><input name="aufschlag_pct" inputmode="decimal" placeholder="${esc(S.aufschlag_pct)}" value="${esc(rcState.aufschlag_pct)}"></div>
-    </form></div></div>
+    <div class="card"><div class="ch"><h3>Eingaben</h3></div><div class="cb" id="rcForm">
+      <div class="rcsec"><div class="rchead"><b>🖨 Druck / Laser</b><span class="tiny muted">Maschine · Zeit · Material · Menge</span></div>
+        <div id="rcJobs">${st.jobs.map(jobRow).join('')}</div>
+        <button type="button" class="small secondary" data-add="jobs">+ weiterer Druck / Laser</button></div>
+      <div class="rcsec"><div class="rchead"><b>👩‍🔧 Arbeitszeit</b><span class="tiny muted">Wer · Tätigkeit · Zeit</span></div>
+        <div id="rcArbeit">${st.arbeit.map(arbRow).join('')}</div>
+        <button type="button" class="small secondary" data-add="arbeit">+ weitere Arbeitszeit</button></div>
+      <div class="rcsec"><div class="rchead"><b>🎁 Zubehör / Extras</b><span class="tiny muted">Bezeichnung · Betrag</span></div>
+        <div id="rcExtras">${st.extras.map(extRow).join('')}</div>
+        <button type="button" class="small secondary" data-add="extras">+ weiteres Zubehör</button></div>
+      <div class="form" style="margin-top:14px">
+        <div class="f s6"><label>Ergibt Stück</label><input data-top="stueck" inputmode="decimal" value="${esc(st.stueck)}"></div>
+        <div class="f s6"><label>Aufschlag %</label><input data-top="aufschlag_pct" inputmode="decimal" placeholder="${esc(S.aufschlag_pct)}" value="${esc(st.aufschlag_pct)}"></div>
+      </div>
+      <datalist id="rcTaet">${RC_TAETIGKEIT.map((t) => `<option value="${esc(t)}">`).join('')}</datalist>
+    </div></div>
     <div class="card"><div class="ch"><h3>Ergebnis</h3></div><div class="cb" id="rcOut"><div class="muted">Werte eingeben …</div></div></div>
   </div>`;
   const form = $('#rcForm');
   let timer;
+  const body = () => ({
+    jobs: st.jobs.map((j) => ({ machine_id: j.machine_id || null, material_id: j.material_id || null, dauer_h: parseHours(j.dauer_h), menge: parseNum(j.menge) })),
+    arbeit: st.arbeit.map((a) => ({ person_id: a.person_id || null, taetigkeit: a.taetigkeit, stunden: parseHours(a.stunden) })),
+    extras: st.extras.map((x) => ({ bezeichnung: x.bezeichnung, betrag: parseNum(x.betrag) })),
+    stueck: parseNum(st.stueck), aufschlag_pct: parseNum(st.aufschlag_pct),
+  });
   const calc = async () => {
-    const fd = Object.fromEntries(new FormData(form));
-    rcState = { ...fd };
-    const mat = byId(D.materials, +fd.material_id);
-    $('#rcMengeL').textContent = mat ? (mat.einheit === 'kg' ? 'Menge (Gramm)' : `Menge (${mat.einheit})`) : 'Menge';
-    const body = { ...fd, dauer_h: parseHours(fd.dauer_h), arbeit_h: parseHours(fd.arbeit_h), menge: parseNum(fd.menge), extra: parseNum(fd.extra), stueck: parseNum(fd.stueck), aufschlag_pct: parseNum(fd.aufschlag_pct) };
+    const b = body();
     try {
-      const r = await api('POST', '/api/rechner', body);
+      const r = await api('POST', '/api/rechner', b);
       const sd = r.satz_detail;
+      const h = (arr, k) => arr.reduce((s, x) => s + (+x[k] || 0), 0);
+      const nJobs = b.jobs.filter((j) => j.dauer_h || j.menge).length;
       $('#rcOut').innerHTML = `
         <div class="muted small">Empfohlener Preis pro Stück ${r.ust_satz ? '(netto)' : ''}</div>
         <div class="result-big">${eur(r.netto_stueck_gerundet)}</div>
         ${r.ust_satz ? `<div class="muted">brutto ${eur(r.brutto_stueck)} inkl. ${num(r.ust_satz)} % USt</div>` : ''}
         ${r.stueck > 1 ? `<div class="muted">gesamt für ${num(r.stueck)} Stück: <b>${eur(r.netto_gerundet)}</b></div>` : ''}
         <div class="stackbar" style="margin-top:16px">${r.selbstkosten ? [['maschine', r.maschine], ['material', r.material], ['arbeit', r.arbeit], ['fremd', r.extra]].map(([c, v]) => `<div class="c-${c}" style="width:${(v / r.selbstkosten) * 100}%"></div>`).join('') : ''}</div>
-        <div class="calcrow"><span><span class="legend-dot c-maschine"></span>Maschine${sd ? ` <span class="tiny muted">(${eur3(sd.satz)}/h: Abschreibung ${eur3(sd.abschreibung)}, Verschleiß ${eur3(sd.verschleiss)}, Strom ${eur3(sd.strom)})</span>` : ''}</span><span>${eur(r.maschine)}</span></div>
+        <div class="calcrow"><span><span class="legend-dot c-maschine"></span>Maschine${sd ? ` <span class="tiny muted">(${eur3(sd.satz)}/h: Abschreibung ${eur3(sd.abschreibung)}, Verschleiß ${eur3(sd.verschleiss)}, Strom ${eur3(sd.strom)})</span>` : ` <span class="tiny muted">(${nJobs} Drucke · ${hm(h(b.jobs, 'dauer_h'))} h)</span>`}</span><span>${eur(r.maschine)}</span></div>
         <div class="calcrow"><span><span class="legend-dot c-material"></span>Material${+S.ausschuss_pct ? ` <span class="tiny muted">(inkl. ${num(S.ausschuss_pct)} % Ausschuss)</span>` : ''}</span><span>${eur(r.material)}</span></div>
-        <div class="calcrow"><span><span class="legend-dot c-arbeit"></span>Arbeitszeit</span><span>${eur(r.arbeit)}</span></div>
+        <div class="calcrow"><span><span class="legend-dot c-arbeit"></span>Arbeitszeit <span class="tiny muted">(${hm(h(b.arbeit, 'stunden'))} h)</span></span><span>${eur(r.arbeit)}</span></div>
         <div class="calcrow"><span><span class="legend-dot c-fremd"></span>Zubehör / Extras</span><span>${eur(r.extra)}</span></div>
         <div class="calcrow"><b>Selbstkosten</b><b>${eur(r.selbstkosten)}</b></div>
         <div class="calcrow"><span>+ ${num(r.aufschlag_pct)} % Aufschlag</span><span>${eur(r.netto)}</span></div>
         <div class="calcrow"><span>Gewinn (über Stundenlohn hinaus)</span><span class="okc">${eur(r.netto_gerundet - r.selbstkosten)}</span></div>
         <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap"><button id="rcOrder">Als neuen Auftrag anlegen</button><button class="secondary" id="rcReset">Zurücksetzen</button></div>`;
-      $('#rcOrder').onclick = () => rcToOrder(body, r);
+      $('#rcOrder').onclick = () => rcToOrder(b, r);
       $('#rcReset').onclick = () => { rcState = null; routes.rechner(); };
     } catch (e) { $('#rcOut').innerHTML = `<div class="err">${esc(e.message)}</div>`; }
   };
-  form.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(calc, 250); });
-  form.addEventListener('change', (e) => { if (e.target.name === 'machine_id') syncMaterialSelect(form); calc(); });
-  syncMaterialSelect(form);
+  const later = () => { clearTimeout(timer); timer = setTimeout(calc, 250); };
+  const store = (el) => {
+    if (el.dataset.top) { st[el.dataset.top] = el.value; return; }
+    const row = el.closest('[data-g]'); if (!row || !el.dataset.k) return;
+    const item = st[row.dataset.g][+row.dataset.i];
+    item[el.dataset.k] = ['machine_id', 'material_id', 'person_id'].includes(el.dataset.k) ? (+el.value || null) : el.value;
+    if (el.dataset.k === 'machine_id') { syncMaterialSelect(row); item.material_id = +$('[name=material_id]', row).value || null; }
+    if (el.dataset.k === 'machine_id' || el.dataset.k === 'material_id') $('[name=menge]', row).placeholder = rcMengePh(item.material_id);
+  };
+  form.addEventListener('input', (e) => { store(e.target); later(); });
+  form.addEventListener('change', (e) => { store(e.target); calc(); });
+  form.addEventListener('click', (e) => {
+    const add = e.target.closest('[data-add]');
+    if (add) {
+      const g = add.dataset.add;
+      st[g].push(g === 'jobs' ? rcNewJob((st.jobs[st.jobs.length - 1] || {}).machine_id) : g === 'arbeit' ? rcNewArbeit() : rcNewExtra());
+      routes.rechner();
+      const rows = $$(`[data-g="${g}"]`); const last = rows[rows.length - 1];
+      if (last) $(g === 'arbeit' ? '[data-k=stunden]' : 'input', last).focus();
+      return;
+    }
+    const r = e.target.closest('[data-rm]');
+    if (r && !r.disabled) { st[r.dataset.rm].splice(+r.dataset.i, 1); routes.rechner(); }
+  });
   calc();
 };
 
 function rcToOrder(b, r) {
   newOrder({ titel: '' }, async (order) => {
-    const mat = byId(D.materials, +b.material_id);
-    if (b.dauer_h || b.menge) await api('POST', '/api/t/order_jobs', { order_id: order.id, machine_id: b.machine_id || null, material_id: b.material_id || null, dauer_h: b.dauer_h || 0, menge: b.menge || 0, stueck: b.stueck || null, bezeichnung: 'aus Rechner' });
-    if (b.arbeit_h) await api('POST', '/api/t/order_times', { order_id: order.id, person_id: b.person_id, stunden: b.arbeit_h, taetigkeit: 'Arbeitszeit' });
-    if (b.extra) await api('POST', '/api/t/order_costs', { order_id: order.id, bezeichnung: 'Zubehör / Extras', betrag: b.extra });
-    await api('POST', '/api/t/order_items', { order_id: order.id, bezeichnung: order.titel, farbe_material: mat ? mat.name : '', menge: r.stueck, einheit: 'Stk', einzelpreis: r.netto_stueck_gerundet });
+    const mats = [];
+    for (const j of b.jobs) {
+      if (!j.dauer_h && !j.menge) continue;
+      const mat = byId(D.materials, +j.material_id); if (mat) mats.push(mat.name);
+      await api('POST', '/api/t/order_jobs', { order_id: order.id, machine_id: j.machine_id || null, material_id: j.material_id || null, dauer_h: j.dauer_h || 0, menge: j.menge || 0, stueck: b.jobs.length === 1 ? (b.stueck || null) : null, bezeichnung: 'aus Rechner' });
+    }
+    for (const a of b.arbeit) {
+      if (a.stunden) await api('POST', '/api/t/order_times', { order_id: order.id, person_id: a.person_id, stunden: a.stunden, taetigkeit: a.taetigkeit || 'Arbeitszeit' });
+    }
+    for (const x of b.extras) {
+      if (x.betrag) await api('POST', '/api/t/order_costs', { order_id: order.id, bezeichnung: x.bezeichnung || 'Zubehör / Extras', betrag: x.betrag });
+    }
+    await api('POST', '/api/t/order_items', { order_id: order.id, bezeichnung: order.titel, farbe_material: [...new Set(mats)].join(', '), menge: r.stueck, einheit: 'Stk', einzelpreis: r.netto_stueck_gerundet });
     if (b.aufschlag_pct != null) await api('PUT', `/api/t/orders/${order.id}`, { aufschlag_pct: b.aufschlag_pct });
     await reload();
   });
@@ -1465,7 +1528,14 @@ function setZugang() {
 // ======================================================================
 //  Drucke aus Home Assistant
 // ======================================================================
-const ART_LABEL = { offen: 'offen', privat: '🏠 Privat', gewerbe: '💼 Gewerbe' };
+const ART_LABEL = { offen: 'offen', privat: '🏠 Privat', gewerbe: '💼 Gewerbe', muell: '🗑️ Müll' };
+// geschätzte Kosten eines Drucks: Maschinenstundensatz + Filament (Durchschnittspreis der aktiven Filamente)
+function printCost(p) {
+  const m = byId(D.machines, p.machine_id);
+  const fil = D.materials.filter((x) => x.aktiv && x.typ === 'filament' && x.einheit === 'kg');
+  const kg = fil.length ? fil.reduce((s, x) => s + (+x.preis || 0), 0) / fil.length : 0;
+  return (+p.dauer_h || 0) * (m ? +m.satz || 0 : 0) + (+p.gramm || 0) / 1000 * kg * (1 + (+S.ausschuss_pct || 0) / 100);
+}
 function updateDruckBadge() {
   const n = (D.prints || []).filter((p) => p.art === 'offen' || (p.art === 'gewerbe' && !p.job_id)).length;
   const b = $('#druckBadge');
@@ -1485,6 +1555,7 @@ routes.drucke = () => {
     ohne: P.filter((p) => p.art === 'gewerbe' && !p.job_id).length,
     gewerbe: P.filter((p) => p.art === 'gewerbe').length,
     privat: P.filter((p) => p.art === 'privat').length,
+    muell: P.filter((p) => p.art === 'muell').length,
     alle: P.length,
   };
   const ym = today().slice(0, 7);
@@ -1499,18 +1570,19 @@ routes.drucke = () => {
       <div class="tile accent"><span>Noch einzustufen / zuzuordnen</span><b>${counts.todo}</b><small>${counts.offen} offen · ${counts.ohne} Gewerbe ohne Auftrag</small></div>
       <div class="tile"><span>Gewerbe diesen Monat</span><b>${monat.filter((p) => p.art === 'gewerbe').length}</b><small>${hm(sum(monat.filter((p) => p.art === 'gewerbe'), 'dauer_h'))} h · ${num(sum(monat.filter((p) => p.art === 'gewerbe'), 'kwh'))} kWh</small></div>
       <div class="tile"><span>Privat diesen Monat</span><b>${monat.filter((p) => p.art === 'privat').length}</b><small>${hm(sum(monat.filter((p) => p.art === 'privat'), 'dauer_h'))} h · ${num(sum(monat.filter((p) => p.art === 'privat'), 'gramm'))} g · Strom ${eur(sum(monat.filter((p) => p.art === 'privat'), 'kwh') * strom)}</small></div>
+      <div class="tile"><span>Müll diesen Monat</span><b class="${monat.some((p) => p.art === 'muell') ? 'warnc' : ''}">${monat.filter((p) => p.art === 'muell').length}</b><small>${hm(sum(monat.filter((p) => p.art === 'muell'), 'dauer_h'))} h · ${num(sum(monat.filter((p) => p.art === 'muell'), 'gramm'))} g · ≈ ${eur(monat.filter((p) => p.art === 'muell').reduce((s, p) => s + printCost(p), 0))}</small></div>
     </div>
-    <div class="filterchips" id="pChips">${[['todo', 'Zu erledigen'], ['offen', 'Offen'], ['ohne', 'Gewerbe ohne Auftrag'], ['gewerbe', 'Gewerbe'], ['privat', 'Privat'], ['alle', 'Alle']]
+    <div class="filterchips" id="pChips">${[['todo', 'Zu erledigen'], ['offen', 'Offen'], ['ohne', 'Gewerbe ohne Auftrag'], ['gewerbe', 'Gewerbe'], ['privat', 'Privat'], ['muell', '🗑️ Müll'], ['alle', 'Alle']]
       .map(([k, l]) => `<button data-f="${k}">${l}<i>${counts[k]}</i></button>`).join('')}</div>
     <div class="card"><div id="pBulk"></div><div class="tblwrap" id="pList"></div></div>
-    <p class="muted small">Eingestufte Drucke bekommen im HA-Druckprotokoll ein 💼 bzw. 🏠 vorangestellt und werden dort abgehakt. Private Drucke zählen trotzdem zu den Betriebsstunden der Maschine (Verschleiß).</p>`;
+    <p class="muted small">Eingestufte Drucke bekommen im HA-Druckprotokoll ein 💼, 🏠 bzw. 🗑️ vorangestellt und werden dort abgehakt. Private Drucke und Müll zählen trotzdem zu den Betriebsstunden der Maschine (Verschleiß). Müll kann optional einem Auftrag zugeordnet werden – dann werden Druckzeit und Filament dem Auftrag als Kosten angerechnet.</p>`;
   const draw = () => {
     $$('#pChips button').forEach((b) => b.classList.toggle('on', b.dataset.f === pFilter));
     const list = P.filter((p) => ({ todo: p.art === 'offen' || (p.art === 'gewerbe' && !p.job_id), offen: p.art === 'offen',
-      ohne: p.art === 'gewerbe' && !p.job_id, gewerbe: p.art === 'gewerbe', privat: p.art === 'privat', alle: true })[pFilter]);
+      ohne: p.art === 'gewerbe' && !p.job_id, gewerbe: p.art === 'gewerbe', privat: p.art === 'privat', muell: p.art === 'muell', alle: true })[pFilter]);
     [...pSel].forEach((id) => { if (!list.some((p) => p.id === id)) pSel.delete(id); });
     $('#pBulk').innerHTML = pSel.size ? `<div class="bulkbar"><b>${pSel.size} ausgewählt</b>
-      <button class="small secondary" data-bulk="privat">🏠 Privat</button><button class="small secondary" data-bulk="gewerbe">💼 Gewerbe</button>
+      <button class="small secondary" data-bulk="privat">🏠 Privat</button><button class="small secondary" data-bulk="gewerbe">💼 Gewerbe</button><button class="small secondary" data-bulk="muell">🗑️ Müll</button>
       <button class="small" data-bulk="assign">→ Auftrag zuordnen</button><button class="ghost small" data-bulk="none">Auswahl aufheben</button></div>` : '';
     $('#pList').innerHTML = list.length ? `<table class="tbl"><thead><tr><th class="chk"><input type="checkbox" id="pAll"></th><th>Datum</th><th>Drucker</th><th>Druck</th>
       <th class="num">Dauer</th><th class="num">Filament</th><th class="num">Strom</th><th>Einstufung</th><th>Auftrag</th></tr></thead><tbody>
@@ -1522,7 +1594,8 @@ routes.drucke = () => {
         <td class="num">${p.dauer_h != null ? hm(p.dauer_h) + ' h' : '–'}</td><td class="num">${p.gramm != null ? num(p.gramm) + ' g' : '–'}</td>
         <td class="num">${p.kwh != null ? num(p.kwh) + ' kWh' : '–'}</td>
         <td class="nowrap"><span class="artbtns"><button class="privat ${p.art === 'privat' ? 'on' : ''}" data-art="privat" ${p.job_id ? 'disabled' : ''}>🏠 Privat</button>
-          <button class="gewerbe ${p.art === 'gewerbe' ? 'on' : ''}" data-art="gewerbe">💼 Gewerbe</button></span>${p.sync_pending ? ' <span class="tiny warnc" title="Wird beim nächsten Abruf an HA gemeldet">⏳</span>' : ''}</td>
+          <button class="gewerbe ${p.art === 'gewerbe' ? 'on' : ''}" data-art="gewerbe">💼 Gewerbe</button>
+          <button class="muell ${p.art === 'muell' ? 'on' : ''}" data-art="muell" title="Müll / Ausschuss – wird protokolliert, Auftrag optional">🗑️ Müll</button></span>${p.sync_pending ? ' <span class="tiny warnc" title="Wird beim nächsten Abruf an HA gemeldet">⏳</span>' : ''}</td>
         <td>${o ? `<a href="#auftrag/${o.id}">${esc(o.nr)}</a> <span class="muted small">${esc(o.titel)}</span> <button class="icon" data-unassign title="Zuordnung lösen">✕</button>`
           : (p.art !== 'privat' ? '<button class="small secondary" data-assign>→ zuordnen</button>' : '')}</td></tr>`; }).join('')}
       </tbody></table>` : `<div class="empty">${P.length ? 'Nichts zu tun 🎉' : 'Noch keine Drucke abgerufen.'}</div>`;
@@ -1606,7 +1679,7 @@ window.pickPrintForOrder = (orderId) => {
     body: `<p class="muted small" style="margin-top:0">Drucke auswählen, die zu diesem Auftrag gehören:</p>
       <div class="tblwrap"><table class="tbl"><thead><tr><th class="chk"></th><th>Datum</th><th>Drucker</th><th>Druck</th><th class="num">Dauer</th><th class="num">Filament</th><th class="num">Strom</th></tr></thead><tbody>
       ${list.map((p) => `<tr><td class="chk"><input type="checkbox" value="${p.id}"></td><td class="nowrap">${dmy(p.datum)} ${esc(p.uhrzeit || '')}</td><td>${esc(machineName(p.machine_id).replace('Bambu Lab ', ''))}</td>
-        <td><b>${esc(p.name)}</b>${p.erfolg ? '' : ' ❌'} ${p.art === 'gewerbe' ? chip('gewerbe', '💼') : ''}</td><td class="num">${hm(p.dauer_h)} h</td><td class="num">${num(p.gramm)} g</td><td class="num">${num(p.kwh)} kWh</td></tr>`).join('')}
+        <td><b>${esc(p.name)}</b>${p.erfolg ? '' : ' ❌'} ${p.art === 'gewerbe' ? chip('gewerbe', '💼') : ''}${p.art === 'muell' ? chip('storniert', '🗑️ Müll') : ''}</td><td class="num">${hm(p.dauer_h)} h</td><td class="num">${num(p.gramm)} g</td><td class="num">${num(p.kwh)} kWh</td></tr>`).join('')}
       </tbody></table></div>`,
     footer: '<span class="spacer"></span><button class="secondary" data-c>Abbrechen</button><button data-ok>Weiter</button>',
   });

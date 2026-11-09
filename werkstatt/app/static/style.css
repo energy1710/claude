@@ -142,6 +142,26 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .form .f { grid-column: span 12; display: flex; flex-direction: column; gap: 5px; }
 .form .f.s6 { grid-column: span 6; } .form .f.s4 { grid-column: span 4; } .form .f.s3 { grid-column: span 3; } .form .f.s8 { grid-column: span 8; }
 @media (max-width: 640px) { .form .f.s6, .form .f.s4, .form .f.s3, .form .f.s8 { grid-column: span 12; } }
+/* Schnellrechner: mehrere Zeilen mit +/− */
+.rcsec { margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.rchead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.rcrow { display: grid; gap: 8px; align-items: center; margin-bottom: 8px; }
+.rcrow > * { min-width: 0; width: 100%; }
+.rc-job { grid-template-columns: minmax(0,1.3fr) 92px minmax(0,1.6fr) 84px 34px; }
+.rc-arb { grid-template-columns: minmax(0,1fr) minmax(0,1.4fr) 104px 34px; }
+.rc-ext { grid-template-columns: minmax(0,1fr) 104px 34px; }
+.rcrow .rc-rm { width: 34px; height: 34px; font-size: 18px; font-weight: 700; }
+.rcrow .rc-rm:disabled { opacity: .25; cursor: default; }
+@media (max-width: 640px) {
+  .rc-job { grid-template-columns: minmax(0,1fr) minmax(0,1fr) 34px; padding-bottom: 8px; border-bottom: 1px dashed var(--line); }
+  .rc-job [data-k=machine_id] { grid-column: 1 / 3; grid-row: 1; }
+  .rc-job .rc-rm { grid-column: 3; grid-row: 1; }
+  .rc-job [data-k=material_id] { grid-column: 1 / 4; grid-row: 2; }
+  .rc-job [data-k=dauer_h] { grid-column: 1; grid-row: 3; }
+  .rc-job [data-k=menge] { grid-column: 2 / 4; grid-row: 3; }
+  .rc-arb { grid-template-columns: minmax(0,1fr) 96px 34px; }
+  .rc-arb [data-k=taetigkeit] { grid-column: 1 / span 3; grid-row: 2; }
+}
 .form label { font-size: 12.5px; color: var(--muted); font-weight: 600; }
 .form .hint { font-size: 12px; color: var(--dim); }
 .form .chk { flex-direction: row; align-items: center; gap: 9px; }
@@ -298,5 +318,6 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .artbtns button { padding: 4px 9px; font-size: 12.5px; border-radius: 7px; background: var(--panel2); color: var(--muted); border: 1px solid var(--line); }
 .artbtns button.on.privat { color: var(--info); border-color: var(--info); background: rgba(89,168,255,.12); }
 .artbtns button.on.gewerbe { color: var(--ok); border-color: var(--ok); background: rgba(70,192,106,.12); }
+.artbtns button.on.muell { color: var(--err); border-color: var(--err); background: rgba(242,86,77,.12); }
 .st-privat { color: var(--info); background: rgba(89,168,255,.13); }
 .st-gewerbe { color: var(--ok); background: rgba(70,192,106,.13); }

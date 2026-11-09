@@ -134,16 +134,40 @@ def enrich(data):
 
 
 def quick(inp, machines, parts, materials, persons):
-    """Schnellrechner ohne Auftrag."""
-    m = next((x for x in machines if x["id"] == inp.get("machine_id")), None)
-    mat = next((x for x in materials if x["id"] == inp.get("material_id")), None)
-    p = next((x for x in persons if x["id"] == inp.get("person_id")), None)
-    satz = machine_rates(m, [x for x in parts if m and x["machine_id"] == m["id"]]) if m else None
-    dauer = f(inp.get("dauer_h"))
-    k_m = dauer * (satz["satz"] if satz else 0)
-    k_mat = material_cost(mat, inp.get("menge"))
-    k_arb = f(inp.get("arbeit_h")) * (f(p["stundensatz"]) if p else 0)
-    k_extra = f(inp.get("extra"))
+    """Schnellrechner ohne Auftrag.
+
+    Mehrere Zeilen möglich: jobs=[{machine_id, material_id, dauer_h, menge}], arbeit=[{person_id, stunden}],
+    extras=[{bezeichnung, betrag}]. Die alten Einzelfelder (machine_id, dauer_h, …) gehen weiterhin.
+    """
+    jobs = inp.get("jobs")
+    if jobs is None:
+        jobs = [{k: inp.get(k) for k in ("machine_id", "material_id", "dauer_h", "menge")}]
+    arbeit = inp.get("arbeit")
+    if arbeit is None:
+        arbeit = [{"person_id": inp.get("person_id"), "stunden": inp.get("arbeit_h")}]
+    extras = inp.get("extras")
+    if extras is None:
+        extras = [{"bezeichnung": "", "betrag": inp.get("extra")}]
+
+    out_jobs, k_m, k_mat = [], 0.0, 0.0
+    for j in jobs:
+        m = next((x for x in machines if x["id"] == j.get("machine_id")), None)
+        mat = next((x for x in materials if x["id"] == j.get("material_id")), None)
+        satz = machine_rates(m, [x for x in parts if m and x["machine_id"] == m["id"]]) if m else None
+        km = f(j.get("dauer_h")) * (satz["satz"] if satz else 0)
+        kmat = material_cost(mat, j.get("menge"))
+        k_m += km
+        k_mat += kmat
+        out_jobs.append({"maschine": r2(km), "material": r2(kmat),
+                         "satz_detail": {k: round(v, 3) for k, v in satz.items()} if satz else None})
+    out_arb, k_arb = [], 0.0
+    for a in arbeit:
+        p = next((x for x in persons if x["id"] == a.get("person_id")), None)
+        ka = f(a.get("stunden")) * (f(p["stundensatz"]) if p else 0)
+        k_arb += ka
+        out_arb.append({"kosten": r2(ka), "stundensatz": f(p["stundensatz"]) if p else 0})
+    k_extra = sum(f(x.get("betrag")) for x in extras)
+    satz = out_jobs[0]["satz_detail"] if len(out_jobs) == 1 else None
     selbst = k_m + k_mat + k_arb + k_extra
     auf = f(inp.get("aufschlag_pct")) if inp.get("aufschlag_pct") not in (None, "") else settings.num("aufschlag_pct", 30)
     stueck = max(1.0, f(inp.get("stueck")) or 1.0)
@@ -151,8 +175,9 @@ def quick(inp, machines, parts, materials, persons):
     ust = 0 if settings.flag("kleinunternehmer") else settings.num("ust_satz", 20)
     return {
         "maschine": r2(k_m), "material": r2(k_mat), "arbeit": r2(k_arb), "extra": r2(k_extra),
-        "satz": round(satz["satz"], 3) if satz else 0,
-        "satz_detail": {k: round(v, 3) for k, v in satz.items()} if satz else None,
+        "satz": satz["satz"] if satz else 0,
+        "satz_detail": satz,
+        "jobs": out_jobs, "arbeit_zeilen": out_arb,
         "selbstkosten": r2(selbst), "aufschlag_pct": auf,
         "netto": r2(netto), "netto_gerundet": r2(round_price(netto / stueck) * stueck),
         "stueck": stueck, "netto_stueck": r2(netto / stueck), "netto_stueck_gerundet": round_price(netto / stueck),

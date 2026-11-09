@@ -29,6 +29,14 @@ Läuft als eigener Container (LXC) auf Proxmox.
 
 ## Versionen
 
+### 1.3.0
+- **Schnellrechner mit mehreren Zeilen**: beliebig viele Drucke/Laser (Maschine, Zeit, Material, Menge), Arbeitszeiten
+  (Person, Tätigkeit, Zeit) und Zubehör (Bezeichnung, Betrag), jeweils mit + / −. „Als neuen Auftrag anlegen“
+  übernimmt alle Zeilen einzeln in den Auftrag.
+- **Drucke: Einstufung „🗑️ Müll“** zusätzlich zu Privat/Gewerbe. Müll wird protokolliert (eigener Filter, Kachel
+  „Müll diesen Monat“ mit Zeit, Gramm und geschätzten Kosten) und kann optional einem Auftrag zugeordnet werden – dann
+  zählen Druckzeit und Filament als Kosten des Auftrags. In Home Assistant bekommt der Eintrag das Präfix 🗑️.
+
 ### 1.2.0
 - **Produktkatalog** (neuer Reiter „Produkte“): fertige Artikel mit Preis, Kategorie, Herstellkosten und Lagerbestand,
   Lagerzugang buchen, Lagerwert-Übersicht.

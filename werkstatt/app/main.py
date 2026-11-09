@@ -18,7 +18,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import backup, bestellung, calc, db, ha, images, pdf, seed, settings, storage
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 for _noisy in ("smbprotocol", "smbclient", "spnego", "fontTools", "fpdf"):
@@ -938,15 +938,22 @@ def rechner(body: dict):
         ps = db.rows(c.execute("SELECT * FROM wear_parts"))
         mats = db.rows(c.execute("SELECT * FROM materials"))
         pers = db.rows(c.execute("SELECT * FROM persons"))
-    inp = dict(body)
-    for k in ("machine_id", "material_id", "person_id"):
-        try:
-            inp[k] = int(inp[k]) if inp.get(k) not in (None, "") else None
-        except ValueError:
-            inp[k] = None
-    for k in ("dauer_h", "menge", "arbeit_h", "extra", "stueck", "aufschlag_pct"):
-        if isinstance(inp.get(k), str):
-            inp[k] = inp[k].replace(",", ".") or None
+    def norm(d):
+        d = dict(d or {})
+        for k in ("machine_id", "material_id", "person_id"):
+            try:
+                d[k] = int(d[k]) if d.get(k) not in (None, "") else None
+            except (TypeError, ValueError):
+                d[k] = None
+        for k in ("dauer_h", "menge", "arbeit_h", "stunden", "extra", "betrag", "stueck", "aufschlag_pct"):
+            if isinstance(d.get(k), str):
+                d[k] = d[k].replace(",", ".") or None
+        return d
+
+    inp = norm(body)
+    for k in ("jobs", "arbeit", "extras"):
+        if isinstance(body.get(k), list):
+            inp[k] = [norm(x) for x in body[k] if isinstance(x, dict)]
     return calc.quick(inp, ms, ps, mats, pers)
 
 
@@ -1185,14 +1192,22 @@ class ArtIn(BaseModel):
     art: str
 
 
+def _job_note(p, art):
+    return ("Müll / Ausschuss – " if art == "muell" else "") + ("Fehldruck – " if not p["erfolg"] else "") \
+        + "aus Home Assistant"
+
+
 @app.post("/api/prints/art")
 def prints_art(body: ArtIn):
     warn = None
     for pid in body.ids:
         with db.conn() as c:
-            p = db.one(c.execute("SELECT job_id FROM prints WHERE id=?", (pid,)))
-        if p and p["job_id"] and body.art != "gewerbe":
-            raise HTTPException(400, "Ein Druck ist einem Auftrag zugeordnet – erst die Zuordnung lösen.")
+            p = db.one(c.execute("SELECT job_id, erfolg FROM prints WHERE id=?", (pid,)))
+            if p and p["job_id"]:
+                if body.art not in ("gewerbe", "muell"):
+                    raise HTTPException(400, "Ein Druck ist einem Auftrag zugeordnet – erst die Zuordnung lösen.")
+                # Müll ↔ Gewerbe: Vermerk in der Auftragszeile mitziehen
+                c.execute("UPDATE order_jobs SET notizen=? WHERE id=?", (_job_note(p, body.art), p["job_id"]))
         try:
             w = ha.set_art(pid, body.art, push=not warn)
         except ValueError as e:
@@ -1231,13 +1246,13 @@ def prints_assign(body: AssignIn):
                    "bezeichnung": body.bezeichnung if single and body.bezeichnung else p["name"],
                    "datum": p["datum"], "dauer_h": p["dauer_h"] or 0, "menge": menge,
                    "stueck": body.stueck if single else None, "kwh": p["kwh"],
-                   "notizen": ("Fehldruck – " if not p["erfolg"] else "") + "aus Home Assistant"}
+                   "notizen": _job_note(p, p["art"])}
             cols = list(job)
             cur = c.execute(f"INSERT INTO order_jobs({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
                             [job[k] for k in cols])
             _stock(c, job, -1)
             c.execute("UPDATE prints SET order_id=?, job_id=? WHERE id=?", (body.order_id, cur.lastrowid, pid))
-        if p["art"] != "gewerbe":
+        if p["art"] not in ("gewerbe", "muell"):  # Müll bleibt Müll, wird aber dem Auftrag angerechnet
             warn = ha.set_art(pid, "gewerbe", push=not warn) or warn
     return {"ok": True, "warning": f"Rückmeldung an Home Assistant folgt später: {warn}" if warn else None}
 

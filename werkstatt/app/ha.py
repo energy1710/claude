@@ -1,7 +1,7 @@
 """Home Assistant: Druckprotokolle (To-do-Listen) abholen und Privat/Gewerbe zurückmelden.
 
 HA schreibt nach jedem Druck einen Eintrag in todo.<drucker>_druckprotokoll:
-  Titel:        "04.11.26 14:32 · Name"   (Uhrzeit optional, Präfix 💼/🏠 = schon eingestuft)
+  Titel:        "04.11.26 14:32 · Name"   (Uhrzeit optional, Präfix 💼/🏠/🗑️ = schon eingestuft)
   Beschreibung: "Dauer 2:15 h · Strom 0,221 kWh (0,07 €) · Filament 84 g (1,09 €) · Gesamt 1,16 €"
 Die Werkstatt holt die Einträge per REST-API ab (langlebiges Zugangstoken) und stuft sie ein.
 Eingestufte Einträge werden in HA mit Präfix versehen und abgehakt.
@@ -20,10 +20,12 @@ from . import db, settings
 log = logging.getLogger("werkstatt.ha")
 _lock = threading.Lock()
 
-PREFIX = {"gewerbe": "💼", "privat": "🏠"}
-PREFIX_ART = {v: k for k, v in PREFIX.items()}
+ARTEN = ("offen", "privat", "gewerbe", "muell")
+PREFIX = {"gewerbe": "💼", "privat": "🏠", "muell": "🗑️"}
+# beim Lesen auch ohne Variantenzeichen (U+FE0F) erkennen
+PREFIX_ART = {v.replace("\ufe0f", ""): k for k, v in PREFIX.items()}
 
-RE_SUMMARY = re.compile(r"^\s*(💼|🏠)?\s*(\d{2})\.(\d{2})\.(\d{2,4})(?:\s+(\d{1,2}:\d{2}))?\s*·\s*(.*?)\s*$")
+RE_SUMMARY = re.compile(r"^\s*(💼|🏠|🗑\ufe0f?)?\s*(\d{2})\.(\d{2})\.(\d{2,4})(?:\s+(\d{1,2}:\d{2}))?\s*·\s*(.*?)\s*$")
 RE_DAUER = re.compile(r"Dauer\s+(\d+):(\d{2})")
 RE_KWH = re.compile(r"Strom\s+([\d.,]+)\s*kWh")
 RE_GRAMM = re.compile(r"Filament\s+([\d.,]+)\s*g")
@@ -59,7 +61,7 @@ def parse_item(item):
         "ha_uid": item.get("uid"),
         "ha_summary": item.get("summary"),
         "ha_status": item.get("status"),
-        "art_ha": PREFIX_ART.get(pre),
+        "art_ha": PREFIX_ART.get((pre or "").replace("\ufe0f", "")),
         "datum": f"{year:04d}-{int(mo):02d}-{int(d):02d}",
         "uhrzeit": hhmm,
         "name": name,
@@ -74,7 +76,7 @@ def strip_prefix(summary):
     s = (summary or "").strip()
     for p in PREFIX_ART:
         if s.startswith(p):
-            return s[len(p):].strip()
+            return s[len(p):].lstrip("\ufe0f").strip()
     return s
 
 
@@ -225,8 +227,8 @@ def sync():
 
 
 def set_art(print_id, art, push=True):
-    if art not in ("offen", "privat", "gewerbe"):
-        raise ValueError("Art muss offen, privat oder gewerbe sein")
+    if art not in ARTEN:
+        raise ValueError("Art muss offen, privat, gewerbe oder muell sein")
     with db.conn() as c:
         p = db.one(c.execute("SELECT * FROM prints WHERE id=?", (print_id,)))
         if not p:
