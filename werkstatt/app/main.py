@@ -18,7 +18,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import archiv, backup, bestellung, calc, db, ha, images, pdf, seed, settings, storage
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 for _noisy in ("smbprotocol", "smbclient", "spnego", "fontTools", "fpdf"):
@@ -136,14 +136,14 @@ TABLES = {
     "wear_parts": ["machine_id", "name", "preis", "lebensdauer_h", "gewechselt_bei_h", "notizen"],
     "materials": ["name", "typ", "hersteller", "farbe", "einheit", "preis", "bestand", "notizen", "aktiv"],
     "products": ["artikelnr", "name", "kategorie", "beschreibung", "farbe_material", "einheit", "preis",
-                 "herstellkosten", "bestand", "notizen", "aktiv"],
+                 "herstellkosten", "bestand", "notizen", "aktiv", "kalkulation"],
     "orders": ["customer_id", "titel", "beschreibung", "status", "eingang", "termin", "ordner", "aufschlag_pct",
                "vertrieb", "uebergabe", "versand", "zahlungsart", "anzahlung", "zahlungsstatus", "zahlungsdatum",
                "wuensche", "notizen"],
     "order_jobs": ["order_id", "machine_id", "material_id", "bezeichnung", "datum", "dauer_h", "menge", "stueck",
                    "kwh", "notizen"],
     "order_times": ["order_id", "person_id", "datum", "stunden", "taetigkeit"],
-    "order_costs": ["order_id", "bezeichnung", "datum", "betrag"],
+    "order_costs": ["order_id", "bezeichnung", "datum", "betrag", "product_id", "material_id", "menge", "einzelpreis"],
     "order_items": ["order_id", "sort", "bezeichnung", "beschreibung", "farbe_material", "personalisierung", "menge",
                     "einheit", "einzelpreis"],
     "images": ["titel"],
@@ -152,7 +152,7 @@ TABLES = {
 NUMERIC = {"stundensatz", "verrechnungssatz", "anschaffung_preis", "lebensdauer_h", "leistung_w", "stunden_vorher",
            "wartung_eur_h", "preis", "gewechselt_bei_h", "bestand", "aufschlag_pct", "dauer_h", "menge", "stueck",
            "stunden", "betrag", "sort", "einzelpreis", "aktiv", "customer_id", "machine_id", "material_id",
-           "order_id", "person_id", "versand", "anzahlung", "kwh", "herstellkosten"}
+           "order_id", "person_id", "versand", "anzahlung", "kwh", "herstellkosten", "product_id"}
 REQUIRED = {"persons": "name", "machines": "name", "wear_parts": "name", "materials": "name", "orders": "titel",
             "products": "name"}
 STATUS = ["anfrage", "angebot", "in_arbeit", "fertig", "abgeholt", "abgerechnet", "bezahlt", "storniert"]
@@ -205,6 +205,38 @@ def _stock(c, job, sign):
         c.execute("UPDATE materials SET bestand = ROUND(bestand + ?, 4) WHERE id=?", (sign * q, mid))
 
 
+def _cost_stock(c, row, sign):
+    """Zubehör aus dem Produktkatalog / Material: Lager anpassen (sign=-1 verbraucht, +1 zurück)."""
+    menge = calc.f(row.get("menge"))
+    if not menge:
+        return
+    if row.get("product_id"):
+        c.execute("UPDATE products SET bestand = ROUND(bestand + ?, 4) WHERE id=? AND bestand IS NOT NULL",
+                  (sign * menge, row["product_id"]))
+    if row.get("material_id"):
+        _stock(c, {"material_id": row["material_id"], "menge": menge}, sign)
+
+
+def _row_stock(c, table, row, sign):
+    if table == "order_jobs":
+        _stock(c, row, sign)
+    elif table == "order_costs":
+        _cost_stock(c, row, sign)
+
+
+def _cost_betrag(c, data, old=None):
+    """Betrag = Menge × Preis pro Einheit (Material in kg: Menge in Gramm)."""
+    m = {**(old or {}), **data}
+    if m.get("menge") is None or m.get("einzelpreis") is None:
+        return
+    faktor = 1.0
+    if m.get("material_id"):
+        mat = db.one(c.execute("SELECT einheit FROM materials WHERE id=?", (m["material_id"],)))
+        if mat and mat["einheit"] == "kg":
+            faktor = 0.001
+    data["betrag"] = round(calc.f(m["menge"]) * faktor * calc.f(m["einzelpreis"]), 2)
+
+
 @app.post("/api/t/{table}")
 def create(table: str, body: dict):
     if table not in TABLES or table in ("images", "prints"):
@@ -221,6 +253,8 @@ def create(table: str, body: dict):
             data.setdefault("status", "anfrage")
         if table in ("order_jobs", "order_times", "order_costs") and not data.get("datum"):
             data["datum"] = date.today().isoformat()
+        if table == "order_costs":
+            _cost_betrag(c, data)
         if table == "order_items" and data.get("sort") is None:
             r = c.execute("SELECT COALESCE(MAX(sort),0)+1 FROM order_items WHERE order_id=?",
                           (data.get("order_id"),)).fetchone()
@@ -229,14 +263,15 @@ def create(table: str, body: dict):
         cur = c.execute(f"INSERT INTO {table}({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
                         [data[k] for k in cols])
         new_id = cur.lastrowid
-        if table == "order_jobs":
-            _stock(c, data, -1)
+        _row_stock(c, table, data, -1)
         row = db.one(c.execute(f"SELECT * FROM {table} WHERE id=?", (new_id,)))
     if table == "orders" and settings.flag("smb_ordner_auto") and _storage_configured():
         try:
             row["ordner"] = _ensure_folder(new_id)
         except (storage.StorageError, HTTPException) as e:
             warn = f"Auftragsordner konnte nicht angelegt werden: {getattr(e, 'detail', e)}"
+    if table == "orders":
+        ha.termin_soon(new_id)
     return {"row": row, "warning": warn}
 
 
@@ -251,8 +286,9 @@ def update(table: str, rid: int, body: dict):
         old = db.one(c.execute(f"SELECT * FROM {table} WHERE id=?", (rid,)))
         if not old:
             raise HTTPException(404, "Nicht gefunden")
-        if table == "order_jobs":
-            _stock(c, old, +1)
+        _row_stock(c, table, old, +1)
+        if table == "order_costs":
+            _cost_betrag(c, data, old)
         sets = ", ".join(f"{k}=?" for k in data)
         if table in ("customers", "orders"):
             sets += ", updated_at=CURRENT_TIMESTAMP"
@@ -262,9 +298,14 @@ def update(table: str, rid: int, body: dict):
             sets += ", ordner_offen=NULL"
         c.execute(f"UPDATE {table} SET {sets} WHERE id=?", [*data.values(), rid])
         row = db.one(c.execute(f"SELECT * FROM {table} WHERE id=?", (rid,)))
-        if table == "order_jobs":
-            _stock(c, row, -1)
+        _row_stock(c, table, row, -1)
     warn = None
+    if table == "orders" and {"titel", "termin", "status", "customer_id"} & set(data):
+        ha.termin_soon(rid)
+    if table == "customers":
+        with db.conn() as c:
+            for r in c.execute("SELECT id FROM orders WHERE customer_id=? AND ha_termin_uid IS NOT NULL", (rid,)):
+                ha.termin_soon(r["id"])
     if table == "orders" and data.get("status") and data["status"] != old["status"]:
         warn = archiv.sync_order_soon(rid)
         with db.conn() as c:
@@ -276,17 +317,21 @@ def update(table: str, rid: int, body: dict):
 def delete(table: str, rid: int):
     if table not in TABLES:
         raise HTTPException(404)
+    termin_uid = None
     with db.conn() as c:
-        if table == "order_jobs":
-            old = db.one(c.execute("SELECT * FROM order_jobs WHERE id=?", (rid,)))
+        if table in ("order_jobs", "order_costs"):
+            old = db.one(c.execute(f"SELECT * FROM {table} WHERE id=?", (rid,)))
             if old:
-                _stock(c, old, +1)
+                _row_stock(c, table, old, +1)
+        if table == "order_jobs":
             c.execute("UPDATE prints SET order_id=NULL, job_id=NULL WHERE job_id=?", (rid,))
         if table == "orders":
             n = c.execute("SELECT COUNT(*) FROM documents WHERE order_id=? AND typ='rechnung' AND status!='storniert'",
                           (rid,)).fetchone()[0]
             if n:
                 raise HTTPException(400, "Zu diesem Auftrag gibt es Rechnungen – bitte Status „storniert“ verwenden.")
+            r = c.execute("SELECT ha_termin_uid FROM orders WHERE id=?", (rid,)).fetchone()
+            termin_uid = r["ha_termin_uid"] if r else None
         files = []
         if table in ("orders", "customers"):
             col = "order_id" if table == "orders" else "customer_id"
@@ -296,6 +341,8 @@ def delete(table: str, rid: int):
         c.execute(f"DELETE FROM {table} WHERE id=?", (rid,))
     for f in files:
         images.delete_files(f)
+    if termin_uid:
+        ha.termin_soon(remove_uid=termin_uid)
     return {"ok": True}
 
 
@@ -804,6 +851,7 @@ def create_doc(oid: int, body: DocIn):
         order_rank = STATUS.index(o["status"]) if o["status"] in STATUS else 0
         if STATUS.index(new_status) > order_rank and o["status"] != "storniert":
             c.execute("UPDATE orders SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (new_status, oid))
+    ha.termin_soon(oid)
     warn = _render_doc(did)
     return {"id": did, "nr": nr, "warning": warn}
 
@@ -912,6 +960,8 @@ def update_doc(did: int, body: DocUpd):
     warn = _render_doc(did) if rerender else None
     if body.status == "bezahlt" and d["order_id"] and d["typ"] == "rechnung":
         warn = " ".join(x for x in (warn, archiv.sync_order_soon(d["order_id"])) if x) or None
+    if d["order_id"] and body.status is not None:
+        ha.termin_soon(d["order_id"])
     return {"ok": True, "warning": warn}
 
 
@@ -1212,6 +1262,18 @@ def ha_sync():
     except ha.HAError as e:
         raise HTTPException(400, str(e))
     r = ha.sync()
+    return {**r, "settings": settings.public()}
+
+
+@app.post("/api/ha/termine")
+def ha_termine():
+    try:
+        ha._cfg()
+    except ha.HAError as e:
+        raise HTTPException(400, str(e))
+    if not ha.termine_aktiv():
+        raise HTTPException(400, "Termin-Übertragung ist ausgeschaltet oder keine Liste (todo.…) eingetragen.")
+    r = ha.sync_termine()
     return {**r, "settings": settings.public()}
 
 

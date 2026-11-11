@@ -29,6 +29,18 @@ Läuft als eigener Container (LXC) auf Proxmox.
 
 ## Versionen
 
+### 1.5.0
+- **Produkte aus Aufträgen**: Knopf „📦 Als Produkt anlegen“ bei „Kosten & Preis“ im Auftrag – übernimmt Name,
+  Beschreibung und die komplette Kalkulation (Drucke, Arbeitszeit, Zubehör, Stückzahl).
+- **Produkte mit Kalkulation**: Im Produktformular gibt es die Kalkulation wie im Schnellrechner. Herstellkosten pro
+  Stück werden daraus berechnet, der empfohlene Preis vorgeschlagen. Die Kalkulation wird beim Produkt gespeichert.
+  Auch aus dem Schnellrechner: „📦 Als Produkt anlegen“.
+- **Zubehör & Fremdkosten aus Produkten / Material**: im Auftrag und im Rechner (📦). Betrag = Menge × Preis
+  (Produkte: Herstellkosten), wird vom Lager abgebucht und bei Änderung/Löschen zurückgebucht.
+- **Auftragstermine nach Home Assistant**: Aufträge mit „fertig bis“-Datum landen als To-do mit Fälligkeitsdatum in
+  einer HA-Liste (Standard `todo.werkstatt_termine`). Titel, Termin, Kunde und Status werden abgeglichen, fertige
+  Aufträge abgehakt, stornierte/gelöschte entfernt. Einstellungen → Home Assistant.
+
 ### 1.4.0
 - **Abgeschlossene Aufträge im Ordnersystem**: Sobald ein Auftrag „Bezahlt“ ist (Status oder Rechnung bezahlt), wird
   sein Ordner nach `Abgeschlossen/<Jahr>/` verschoben (Jahr = Auftragseingang). Wird der Auftrag wieder geöffnet,

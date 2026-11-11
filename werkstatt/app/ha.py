@@ -124,6 +124,13 @@ def update_item(liste, uid, rename=None, status=None):
     _post("/api/services/todo/update_item", body)
 
 
+def get_all_items(liste):
+    r = _post("/api/services/todo/get_items?return_response",
+              {"entity_id": liste, "status": ["needs_action", "completed"]})
+    resp = (r or {}).get("service_response") or {}
+    return (resp.get(liste) or {}).get("items") or []
+
+
 def listen():
     return [x.strip() for x in (settings.get("ha_listen") or "").split(",") if x.strip().startswith("todo.")]
 
@@ -244,6 +251,131 @@ def set_art(print_id, art, push=True):
     return None if push or not p["ha_uid"] else "vorgemerkt"
 
 
+# ---------- Auftragstermine → Home Assistant ----------
+# Jeder Auftrag mit Fertigstellungstermin wird ein Eintrag in einer HA-To-do-Liste (z. B. „Werkstatt Termine“)
+# mit Fälligkeitsdatum. Von dort lässt er sich per HA-Automation z. B. in den Google-Kalender übernehmen.
+
+FERTIG = ("fertig", "abgeholt", "abgerechnet", "bezahlt")
+STATUS_TEXT = {"anfrage": "Anfrage", "angebot": "Angebot", "in_arbeit": "In Arbeit", "fertig": "Fertig",
+               "abgeholt": "Übergeben", "abgerechnet": "Abgerechnet", "bezahlt": "Bezahlt", "storniert": "Storniert"}
+_tlock = threading.Lock()
+
+
+def termine_aktiv():
+    return settings.flag("ha_termine_aktiv") and bool(settings.get("ha_url") and settings.get("ha_token")) \
+        and (settings.get("ha_termine_liste") or "").startswith("todo.")
+
+
+def _kunde(k):
+    if not k:
+        return ""
+    return k.get("firma") or " ".join(x for x in (k.get("vorname"), k.get("nachname")) if x)
+
+
+def termin_soll(o, k):
+    """Wie der Eintrag in HA aussehen soll – oder None, wenn es keinen geben soll."""
+    if not o or not o.get("termin") or o.get("status") == "storniert":
+        return None
+    kunde = _kunde(k)
+    summary = f"{o['nr']} {o['titel']}" + (f" ({kunde})" if kunde else "")
+    desc = " · ".join(x for x in (f"Status: {STATUS_TEXT.get(o['status'], o['status'])}",
+                                  f"Kunde: {kunde}" if kunde else "", f"Werkstatt-Auftrag {o['nr']}") if x)
+    return {"summary": summary, "due": o["termin"][:10], "description": desc,
+            "status": "completed" if o["status"] in FERTIG else "needs_action"}
+
+
+def _ist(item):
+    return {"summary": item.get("summary") or "", "due": (item.get("due") or "")[:10],
+            "description": item.get("description") or "", "status": item.get("status") or "needs_action"}
+
+
+def sync_termine(only_ids=None, remove_uids=()):
+    """Gleicht die Auftragstermine mit der HA-Liste ab. only_ids = nur diese Aufträge."""
+    if not termine_aktiv():
+        return {"ok": True, "text": "Termin-Übertragung ist ausgeschaltet."}
+    liste = settings.get("ha_termine_liste").strip()
+    with _tlock:
+        neu = geaendert = entfernt = 0
+        try:
+            items = {i.get("uid"): i for i in get_all_items(liste) if i.get("uid")}
+            for uid in remove_uids:
+                if uid in items:
+                    _post("/api/services/todo/remove_item", {"entity_id": liste, "item": uid})
+                    entfernt += 1
+            with db.conn() as c:
+                sql = "SELECT * FROM orders"
+                orders = db.rows(c.execute(sql))
+                kunden = {k["id"]: k for k in db.rows(c.execute("SELECT * FROM customers"))}
+            for o in orders:
+                if only_ids is not None and o["id"] not in only_ids:
+                    continue
+                soll = termin_soll(o, kunden.get(o["customer_id"]))
+                uid = o.get("ha_termin_uid")
+                item = items.get(uid) if uid else None
+                if soll is None:
+                    if item:
+                        _post("/api/services/todo/remove_item", {"entity_id": liste, "item": uid})
+                        entfernt += 1
+                    if uid:
+                        with db.conn() as c:
+                            c.execute("UPDATE orders SET ha_termin_uid=NULL WHERE id=?", (o["id"],))
+                    continue
+                if item:
+                    ist = _ist(item)
+                    if ist != soll:
+                        body = {"entity_id": liste, "item": uid}
+                        if ist["summary"] != soll["summary"]:
+                            body["rename"] = soll["summary"]
+                        if ist["due"] != soll["due"]:
+                            body["due_date"] = soll["due"]
+                        if ist["description"] != soll["description"]:
+                            body["description"] = soll["description"]
+                        if ist["status"] != soll["status"]:
+                            body["status"] = soll["status"]
+                        _post("/api/services/todo/update_item", body)
+                        geaendert += 1
+                    continue
+                # neu anlegen (auch wenn der Eintrag in HA gelöscht wurde)
+                _post("/api/services/todo/add_item", {"entity_id": liste, "item": soll["summary"],
+                                                      "due_date": soll["due"], "description": soll["description"]})
+                bekannt = {x["ha_termin_uid"] for x in orders if x.get("ha_termin_uid")}
+                new_uid = next((i.get("uid") for i in get_all_items(liste)
+                                if i.get("summary") == soll["summary"] and i.get("uid") not in bekannt
+                                and i.get("uid") not in items), None)
+                if new_uid and soll["status"] == "completed":
+                    _post("/api/services/todo/update_item", {"entity_id": liste, "item": new_uid,
+                                                             "status": "completed"})
+                if new_uid:
+                    items[new_uid] = {"uid": new_uid}
+                    o["ha_termin_uid"] = new_uid
+                    with db.conn() as c:
+                        c.execute("UPDATE orders SET ha_termin_uid=? WHERE id=?", (new_uid, o["id"]))
+                neu += 1
+            teile = [x for x in (f"{neu} neu" if neu else "", f"{geaendert} geändert" if geaendert else "",
+                                 f"{entfernt} entfernt" if entfernt else "") if x]
+            text = ", ".join(teile) or "alles aktuell"
+            ok = True
+        except HAError as e:
+            text, ok = str(e), False
+        if only_ids is None:
+            settings.set_many({"ha_termine_letzt": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                               "ha_termine_status": ("ok: " if ok else "fehler: ") + text})
+        return {"ok": ok, "text": text}
+
+
+def termin_soon(order_id=None, remove_uid=None):
+    """Nach einer Änderung im Hintergrund übertragen (blockiert die Oberfläche nicht)."""
+    if not termine_aktiv():
+        return
+
+    def _run():
+        try:
+            sync_termine(only_ids={order_id} if order_id else set(), remove_uids=[remove_uid] if remove_uid else ())
+        except Exception:  # pragma: no cover
+            log.exception("Termin-Übertragung fehlgeschlagen")
+    threading.Thread(target=_run, name="ha-termin", daemon=True).start()
+
+
 def _loop():
     time.sleep(20)
     while True:
@@ -252,6 +384,11 @@ def _loop():
                 sync()
         except Exception:  # pragma: no cover
             log.exception("HA-Abruf fehlgeschlagen")
+        try:
+            if termine_aktiv():
+                sync_termine()
+        except Exception:  # pragma: no cover
+            log.exception("Termin-Übertragung fehlgeschlagen")
         time.sleep(max(1.0, settings.num("ha_intervall_min", 3)) * 60)
 
 

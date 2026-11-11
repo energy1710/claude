@@ -71,6 +71,10 @@ DEFAULTS = {
     "smb_ordner_schema": "{jahr}/{nr} {kunde} - {titel}",
     "smb_pdf_kopieren": "1",
     "smb_unc_anzeige": "",
+    "ha_termine_aktiv": "0",           # Auftragstermine als To-do mit Fälligkeitsdatum nach HA
+    "ha_termine_liste": "todo.werkstatt_termine",
+    "ha_termine_letzt": "",
+    "ha_termine_status": "",
     "ordner_abschluss": "1",           # bezahlte Aufträge nach <ordner_abschluss_name>/<Jahr>/ verschieben
     "ordner_abschluss_name": "Abgeschlossen",
     "lokal_auftraege": "",             # alternativ: lokaler/gemounteter Ordner

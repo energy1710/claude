@@ -149,7 +149,13 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .rcrow > * { min-width: 0; width: 100%; }
 .rc-job { grid-template-columns: minmax(0,1.3fr) 92px minmax(0,1.6fr) 84px 34px; }
 .rc-arb { grid-template-columns: minmax(0,1fr) minmax(0,1.4fr) 104px 34px; }
-.rc-ext { grid-template-columns: minmax(0,1fr) 104px 34px; }
+.rc-ext { grid-template-columns: minmax(0,1fr) 64px 96px 34px 34px; }
+.rc-kat { text-align: right; font-variant-numeric: tabular-nums; padding-right: 4px; }
+.pkalk { grid-column: span 12; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.pkalk summary { cursor: pointer; font-weight: 650; }
+.pkalk-in { margin-top: 12px; }
+.pkalk-res { margin-top: 6px; }
+.list-compact li.on { background: var(--accentbg); }
 .rcrow .rc-rm { width: 34px; height: 34px; font-size: 18px; font-weight: 700; }
 .rcrow .rc-rm:disabled { opacity: .25; cursor: default; }
 @media (max-width: 640px) {
@@ -160,6 +166,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
   .rc-job [data-k=dauer_h] { grid-column: 1; grid-row: 3; }
   .rc-job [data-k=menge] { grid-column: 2 / 4; grid-row: 3; }
   .rc-arb { grid-template-columns: minmax(0,1fr) 96px 34px; }
+  .rc-ext { grid-template-columns: minmax(0,1fr) 56px 80px 34px 34px; }
   .rc-arb [data-k=taetigkeit] { grid-column: 1 / span 3; grid-row: 2; }
 }
 .form label { font-size: 12.5px; color: var(--muted); font-weight: 600; }

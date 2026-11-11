@@ -413,8 +413,8 @@ routes.auftrag = async (id) => {
           <td>${p ? `<span class="legend-dot" style="background:${esc(p.farbe || '#888')}"></span>${esc(p.name)}` : '–'}</td><td>${esc(t.taetigkeit || '')}</td><td class="num">${hm(t.stunden)} h</td><td class="num">${eur(t.kosten)}</td></tr>`; }).join('')}
         </tbody></table></div>` : '<div class="empty small">Noch keine Arbeitszeit erfasst.</div>'}</div>
       <div class="subsec"><div class="sh"><h4>🧩 Zubehör & Fremdkosten</h4><span class="sum">${eur(K.fremd)}</span><button class="small secondary" onclick="editCost(null, ${o.id})">+ Kosten</button></div>
-        ${costs.length ? `<div class="tblwrap"><table class="tbl"><tbody>${costs.map((x) => `<tr class="click" onclick="editCost(${x.id})"><td class="nowrap" style="width:110px">${dmy(x.datum)}</td><td>${esc(x.bezeichnung)}</td><td class="num">${eur(x.betrag)}</td></tr>`).join('')}</tbody></table></div>`
-          : '<div class="empty small">z. B. Magnete, Schlüsselringe, Verpackung, Porto-Einkauf …</div>'}</div>
+        ${costs.length ? `<div class="tblwrap"><table class="tbl"><tbody>${costs.map((x) => `<tr class="click" onclick="editCost(${x.id})"><td class="nowrap" style="width:110px">${dmy(x.datum)}</td><td>${x.product_id ? '📦 ' : x.material_id ? '🧵 ' : ''}${esc(x.bezeichnung)}${x.menge != null && (x.product_id || x.material_id) ? ` <span class="muted small">${num(x.menge)} ${esc(katEinheit(x))} × ${eur(x.einzelpreis)}${katFaktor(x) < 1 ? '/kg' : ''}</span>` : ''}</td><td class="num">${eur(x.betrag)}</td></tr>`).join('')}</tbody></table></div>`
+          : '<div class="empty small">z. B. Magnete, Schlüsselringe, Verpackung, Porto-Einkauf … – auch direkt aus Produkten / Material (wird vom Lager abgebucht)</div>'}</div>
     </div>
 
     ${(o.beschreibung || o.wuensche || o.notizen) ? `<div class="card"><div class="ch"><h3>Beschreibung & Hinweise</h3></div><div class="cb">
@@ -424,7 +424,7 @@ routes.auftrag = async (id) => {
   </div>
 
   <div>
-    <div class="card"><div class="ch"><h3>Kosten & Preis</h3></div><div class="cb sumbox">
+    <div class="card"><div class="ch"><h3>Kosten & Preis</h3><button class="small secondary" id="oProd" title="Kalkulation dieses Auftrags als Produkt im Katalog speichern">📦 Als Produkt anlegen</button></div><div class="cb sumbox">
       <div class="stackbar">${parts.map(([key]) => K.selbstkosten ? `<div class="c-${key}" style="width:${(K[key] / K.selbstkosten) * 100}%" title="${key}"></div>` : '').join('')}</div>
       ${parts.map(([key, l]) => `<div class="row"><span><span class="legend-dot c-${key}"></span>${l}</span><span>${eur(K[key])}</span></div>`).join('')}
       <div class="row total"><span>Selbstkosten</span><span>${eur(K.selbstkosten)}</span></div>
@@ -468,6 +468,11 @@ routes.auftrag = async (id) => {
     } catch (err) { fail(err); }
   };
   $('#oEdit').onclick = () => editOrder(o);
+  $('#oProd').onclick = () => {
+    const it = items[0] || {};
+    editProduct(null, { name: o.titel, beschreibung: it.beschreibung || '', farbe_material: it.farbe_material || '', einheit: 'Stk', kalkulation: calcFromOrder(o),
+      notizen: `aus Auftrag ${o.nr}` });
+  };
 
   // Positionen inline bearbeiten
   $('#itemRows').addEventListener('change', async (e) => {
@@ -685,16 +690,54 @@ window.editTime = (id, orderId) => {
 
 window.editCost = (id, orderId) => {
   const x = id ? byId(D.order_costs, id) : { order_id: orderId, datum: today() };
+  const k = { product_id: x.product_id || null, material_id: x.material_id || null, einzelpreis: x.einzelpreis ?? null };
+  const kat = () => k.product_id || k.material_id;
+  const katLabel = () => {
+    if (k.product_id) { const pr = byId(D.products, k.product_id); return `📦 Produkt: <b>${esc(pr ? pr.name : 'gelöscht')}</b>${pr && pr.bestand != null ? ` <span class="muted">(Lager ${num(pr.bestand)})</span>` : ''}`; }
+    if (k.material_id) { const m = byId(D.materials, k.material_id); return `🧵 Material: <b>${esc(m ? m.name : 'gelöscht')}</b>${m && m.bestand != null ? ` <span class="muted">(Lager ${num(m.bestand)} ${esc(m.einheit)})</span>` : ''}`; }
+    return '<span class="muted">freier Betrag</span>';
+  };
   openForm({
-    title: id ? 'Kosten bearbeiten' : 'Zubehör / Fremdkosten erfassen',
+    title: id ? 'Zubehör / Kosten bearbeiten' : 'Zubehör / Fremdkosten erfassen',
     fields: [
+      { t: 'html', html: `<div class="inline" style="flex-wrap:wrap"><span id="cKat" class="small">${katLabel()}</span><span class="spacer"></span>
+        <button type="button" class="small secondary fixed" id="cPick">📦 aus Produkten / Material</button><button type="button" class="small ghost fixed" id="cFree" ${kat() ? '' : 'hidden'}>freier Betrag</button></div>` },
       { k: 'bezeichnung', l: 'Bezeichnung', ph: 'z. B. 10 Schlüsselringe, Geschenkbox', s: 8 },
+      { k: 'datum', l: 'Datum', t: 'date', s: 4 },
+      { k: 'menge', l: 'Menge', t: 'num', s: 4 },
+      { k: 'einzelpreis', l: 'Preis pro Einheit €', t: 'num', s: 4 },
       { k: 'betrag', l: 'Betrag €', t: 'num', s: 4 },
-      { k: 'datum', l: 'Datum', t: 'date', s: 6 },
     ],
     values: x,
-    onSave: async (v) => { v.order_id = x.order_id; await api(id ? 'PUT' : 'POST', id ? `/api/t/order_costs/${id}` : '/api/t/order_costs', v); await refresh(); },
+    onSave: async (v) => {
+      v.order_id = x.order_id;
+      Object.assign(v, k.product_id || k.material_id ? { product_id: k.product_id, material_id: k.material_id } : { product_id: null, material_id: null, menge: null, einzelpreis: null });
+      if (!v.bezeichnung && !kat()) throw new Error('Bitte eine Bezeichnung angeben');
+      await api(id ? 'PUT' : 'POST', id ? `/api/t/order_costs/${id}` : '/api/t/order_costs', v); await refresh();
+    },
     onDelete: id ? async () => { await api('DELETE', `/api/t/order_costs/${id}`); await refresh(); } : null,
+    after: (el) => {
+      const f = (n) => $(`[name=${n}]`, el);
+      const show = () => {
+        const on = !!kat();
+        ['menge', 'einzelpreis'].forEach((n) => { f(n).closest('.f').style.display = on ? '' : 'none'; });
+        f('betrag').readOnly = on;
+        const m = k.material_id && byId(D.materials, k.material_id);
+        f('menge').closest('.f').querySelector('label').textContent = m && m.einheit === 'kg' ? 'Menge (Gramm)' : `Menge (${k.product_id ? ((byId(D.products, k.product_id) || {}).einheit || 'Stk') : m ? m.einheit : 'Stk'})`;
+        f('einzelpreis').closest('.f').querySelector('label').textContent = m && m.einheit === 'kg' ? 'Preis pro kg €' : 'Preis pro Einheit €';
+        $('#cKat', el).innerHTML = katLabel();
+        $('#cFree', el).hidden = !on;
+      };
+      const upd = () => { if (!kat()) return; const b = katBetrag({ ...k, menge: f('menge').value, einzelpreis: parseNum(f('einzelpreis').value) }); f('betrag').value = nf2.format(b); };
+      f('menge').addEventListener('input', upd); f('einzelpreis').addEventListener('input', upd);
+      $('#cPick', el).onclick = () => pickKatalog((r) => {
+        Object.assign(k, { product_id: r.product_id, material_id: r.material_id, einzelpreis: r.einzelpreis });
+        f('bezeichnung').value = r.bezeichnung; f('menge').value = String(r.menge).replace('.', ','); f('einzelpreis').value = nf2.format(r.einzelpreis);
+        show(); upd();
+      });
+      $('#cFree', el).onclick = () => { k.product_id = null; k.material_id = null; show(); };
+      show();
+    },
   });
 };
 
@@ -992,6 +1035,7 @@ routes.kunde = (id) => {
 // ======================================================================
 //  Rechner
 // ======================================================================
+// ---------- Kalkulations-Baustein (Schnellrechner, Produkte) ----------
 let rcState = null;
 const RC_TAETIGKEIT = ['Design / Konstruktion', 'Vorbereitung', 'Nachbearbeitung', 'Bemalen / Veredeln', 'Montage', 'Verpackung & Versand'];
 const rcNewJob = (machineId) => {
@@ -1000,15 +1044,89 @@ const rcNewJob = (machineId) => {
 };
 const rcNewArbeit = () => ({ person_id: (D.persons.find((p) => p.aktiv) || D.persons[0] || {}).id, taetigkeit: '', stunden: '' });
 const rcNewExtra = () => ({ bezeichnung: '', betrag: '' });
+const rcEmpty = () => ({ jobs: [rcNewJob()], arbeit: [rcNewArbeit()], extras: [rcNewExtra()], stueck: 1, aufschlag_pct: '' });
 const rcMengePh = (materialId) => { const mat = byId(D.materials, +materialId); return mat ? (mat.einheit === 'kg' ? 'Gramm' : mat.einheit) : 'Menge'; };
+// Zubehör aus dem Katalog: Betrag = Menge × Preis (Material in kg: Menge in Gramm)
+const katFaktor = (x) => { const m = x.material_id && byId(D.materials, +x.material_id); return m && m.einheit === 'kg' ? 0.001 : 1; };
+const katBetrag = (x) => r2((parseNum(x.menge) || 0) * katFaktor(x) * (+x.einzelpreis || 0));
+const katEinheit = (x) => { if (x.product_id) return (byId(D.products, +x.product_id) || {}).einheit || 'Stk'; const m = byId(D.materials, +x.material_id); return m ? (m.einheit === 'kg' ? 'g' : m.einheit) : ''; };
 
-routes.rechner = () => {
-  rcState = rcState || { jobs: [rcNewJob()], arbeit: [rcNewArbeit()], extras: [rcNewExtra()], stueck: 1, aufschlag_pct: '' };
-  const st = rcState;
+// Kalkulation eines Auftrags als Rechner-Zeilen (für „Als Produkt anlegen“)
+function calcFromOrder(o) {
+  const jobs = D.order_jobs.filter((x) => x.order_id === o.id).map((j) => ({ machine_id: j.machine_id, material_id: j.material_id, dauer_h: j.dauer_h ? hm(j.dauer_h) : '', menge: j.menge ? String(j.menge).replace('.', ',') : '' }));
+  const arbeit = D.order_times.filter((x) => x.order_id === o.id).map((t) => ({ person_id: t.person_id, taetigkeit: t.taetigkeit || '', stunden: t.stunden ? hm(t.stunden) : '' }));
+  const extras = D.order_costs.filter((x) => x.order_id === o.id).map((x) => ({ bezeichnung: x.bezeichnung || '', betrag: String(x.betrag ?? '').replace('.', ','), product_id: x.product_id || null, material_id: x.material_id || null, menge: x.menge != null ? String(x.menge).replace('.', ',') : '', einzelpreis: x.einzelpreis }));
+  return { jobs: jobs.length ? jobs : [rcNewJob()], arbeit: arbeit.length ? arbeit : [rcNewArbeit()], extras: extras.length ? extras : [rcNewExtra()],
+    stueck: o.kosten.stueck || 1, aufschlag_pct: o.aufschlag_pct ?? '' };
+}
+
+function calcBody(st) {
+  return {
+    jobs: st.jobs.map((j) => ({ machine_id: j.machine_id || null, material_id: j.material_id || null, dauer_h: parseHours(j.dauer_h), menge: parseNum(j.menge) })),
+    arbeit: st.arbeit.map((a) => ({ person_id: a.person_id || null, taetigkeit: a.taetigkeit, stunden: parseHours(a.stunden) })),
+    extras: st.extras.map((x) => ({ bezeichnung: x.bezeichnung, betrag: (x.product_id || x.material_id) ? katBetrag(x) : parseNum(x.betrag),
+      product_id: x.product_id || null, material_id: x.material_id || null, menge: parseNum(x.menge), einzelpreis: x.einzelpreis ?? null })),
+    stueck: parseNum(st.stueck), aufschlag_pct: parseNum(st.aufschlag_pct),
+  };
+}
+
+// Produkt oder Material für Zubehör auswählen → onPick({product_id|material_id, bezeichnung, einzelpreis, menge})
+function pickKatalog(onPick, { title = 'Zubehör aus Produkten / Material' } = {}) {
+  let q = ''; let tab = 'material';
+  const m = modal({
+    title,
+    body: `<div class="filterchips" id="pkTab"><button data-t="material">🧵 Material</button><button data-t="product">📦 Produkte</button></div>
+      <div class="toolbar"><input type="search" id="pkQ" placeholder="Suchen …"></div><ul class="list-compact" id="pkList"></ul>
+      <div class="form" id="pkMenge" style="margin-top:12px;display:none"><div class="f s6"><label id="pkML">Menge</label><input id="pkM" inputmode="decimal" value="1"></div>
+        <div class="f s6"><label>Preis pro Einheit €</label><input id="pkP" inputmode="decimal"></div><div class="f"><div class="hint" id="pkH"></div></div></div>`,
+    footer: '<span class="spacer"></span><button class="secondary" data-cancel>Abbrechen</button><button data-ok disabled>Übernehmen</button>',
+  });
+  let sel = null;
+  const draw = () => {
+    $$('#pkTab button', m.el).forEach((b) => b.classList.toggle('on', b.dataset.t === tab));
+    const ql = q.toLowerCase();
+    const src = tab === 'material' ? D.materials : D.products;
+    const list = src.filter((x) => x.aktiv && (!ql || `${x.name} ${x.farbe || ''} ${x.farbe_material || ''} ${x.kategorie || ''} ${x.hersteller || ''}`.toLowerCase().includes(ql)))
+      .sort((a, b) => a.name.localeCompare(b.name, 'de'));
+    $('#pkList', m.el).innerHTML = list.length ? list.map((x) => {
+      const preis = tab === 'material' ? `${eur(x.preis)} / ${esc(x.einheit)}` : `${eur(x.herstellkosten != null && x.herstellkosten !== '' ? x.herstellkosten : x.preis)} / ${esc(x.einheit || 'Stk')}`;
+      return `<li class="click ${sel && sel.x.id === x.id && sel.tab === tab ? 'on' : ''}" data-id="${x.id}"><div class="grow"><b>${esc(x.name)}</b><div class="muted tiny">${esc([x.farbe || x.farbe_material, x.kategorie || MATTYP[x.typ]].filter(Boolean).join(' · '))}</div></div>
+        ${x.bestand == null ? '' : `<span class="small ${x.bestand <= 0 ? 'err' : 'muted'}">Lager ${num(x.bestand)}</span>`}<span class="num small">${preis}</span></li>`;
+    }).join('') : '<li class="muted">Nichts gefunden.</li>';
+  };
+  draw();
+  $('#pkTab', m.el).onclick = (e) => { const b = e.target.closest('button'); if (b) { tab = b.dataset.t; draw(); } };
+  $('#pkQ', m.el).oninput = (e) => { q = e.target.value; draw(); };
+  $('#pkList', m.el).onclick = (e) => {
+    const li = e.target.closest('li[data-id]'); if (!li) return;
+    const x = byId(tab === 'material' ? D.materials : D.products, +li.dataset.id);
+    sel = { tab, x };
+    const kg = tab === 'material' && x.einheit === 'kg';
+    $('#pkMenge', m.el).style.display = '';
+    $('#pkML', m.el).textContent = kg ? 'Menge (Gramm)' : `Menge (${tab === 'material' ? x.einheit : x.einheit || 'Stk'})`;
+    const p = tab === 'material' ? x.preis : (x.herstellkosten != null && x.herstellkosten !== '' ? x.herstellkosten : x.preis);
+    $('#pkP', m.el).value = nf2.format(+p || 0);
+    $('#pkH', m.el).textContent = tab === 'product' ? (x.herstellkosten != null && x.herstellkosten !== '' ? 'Herstellkosten des Produkts' : 'Achtung: keine Herstellkosten hinterlegt – Verkaufspreis vorgeschlagen') + ' · wird vom Lager abgebucht' : (kg ? 'Preis pro kg, Menge in Gramm' : 'wird vom Lager abgebucht, falls Bestand gepflegt');
+    $('[data-ok]', m.el).disabled = false;
+    draw();
+    $('#pkM', m.el).select();
+  };
+  $('[data-cancel]', m.el).onclick = m.close;
+  $('[data-ok]', m.el).onclick = () => {
+    if (!sel) return;
+    const r = { bezeichnung: sel.x.name, menge: parseNum($('#pkM', m.el).value) || 1, einzelpreis: parseNum($('#pkP', m.el).value) || 0, product_id: null, material_id: null };
+    if (sel.tab === 'material') r.material_id = sel.x.id; else r.product_id = sel.x.id;
+    m.close(); onPick(r);
+  };
+}
+
+// Baut die Eingabezeilen (Druck/Laser, Arbeitszeit, Zubehör, Stück, Aufschlag) in `box` und rechnet live.
+function mountCalc(box, st, onResult) {
+  let timer;
   const rm = (g, i, n) => `<button type="button" class="icon rc-rm" data-rm="${g}" data-i="${i}" title="Zeile entfernen" ${n < 2 ? 'disabled' : ''}>−</button>`;
   const jobRow = (j, i) => `<div class="rcrow rc-job" data-g="jobs" data-i="${i}">
       <select name="machine_id" data-k="machine_id" aria-label="Maschine">${machineOpts(j.machine_id)}</select>
-      <input name="dauer_h" data-k="dauer_h" data-hours placeholder="Zeit z. B. 3:20" value="${esc(j.dauer_h)}" aria-label="Druck-/Laserzeit">
+      <input name="dauer_h" data-k="dauer_h" placeholder="Zeit z. B. 3:20" value="${esc(j.dauer_h)}" aria-label="Druck-/Laserzeit">
       <select name="material_id" data-k="material_id" aria-label="Material">${materialOpts(j.material_id, j.machine_id)}</select>
       <input name="menge" data-k="menge" inputmode="decimal" placeholder="${esc(rcMengePh(j.material_id))}" value="${esc(j.menge)}" aria-label="Materialmenge">
       ${rm('jobs', i, st.jobs.length)}</div>`;
@@ -1017,62 +1135,36 @@ routes.rechner = () => {
       <input data-k="taetigkeit" list="rcTaet" placeholder="Tätigkeit (optional)" value="${esc(a.taetigkeit)}" aria-label="Tätigkeit">
       <input data-k="stunden" placeholder="Zeit 0:45" value="${esc(a.stunden)}" aria-label="Arbeitszeit">
       ${rm('arbeit', i, st.arbeit.length)}</div>`;
-  const extRow = (x, i) => `<div class="rcrow rc-ext" data-g="extras" data-i="${i}">
+  const extRow = (x, i) => {
+    const kat = x.product_id || x.material_id;
+    return `<div class="rcrow rc-ext" data-g="extras" data-i="${i}">
       <input data-k="bezeichnung" placeholder="z. B. Schlüsselringe, Geschenkbox" value="${esc(x.bezeichnung)}" aria-label="Zubehör">
-      <input data-k="betrag" inputmode="decimal" placeholder="€" value="${esc(x.betrag)}" aria-label="Betrag €">
+      ${kat ? `<input data-k="menge" inputmode="decimal" value="${esc(x.menge)}" title="Menge in ${esc(katEinheit(x))}" aria-label="Menge">` : '<span></span>'}
+      ${kat ? `<div class="rc-kat" title="${esc(nf2.format(x.einzelpreis || 0))} € pro ${esc(x.material_id && katFaktor(x) < 1 ? 'kg' : katEinheit(x))}">${eur(katBetrag(x))}</div>`
+        : `<input data-k="betrag" inputmode="decimal" placeholder="€" value="${esc(x.betrag)}" aria-label="Betrag €">`}
+      <button type="button" class="icon rc-rm" data-kat="${i}" title="aus Produkten / Material wählen">📦</button>
       ${rm('extras', i, st.extras.length)}</div>`;
-  view.innerHTML = `<div class="pagehead"><h1>🧮 Schnellrechner</h1><span class="sub">Was kostet's – und was sollten wir verlangen?</span></div>
-  <div class="grid2e">
-    <div class="card"><div class="ch"><h3>Eingaben</h3></div><div class="cb" id="rcForm">
+  };
+  const draw = () => {
+    box.innerHTML = `
       <div class="rcsec"><div class="rchead"><b>🖨 Druck / Laser</b><span class="tiny muted">Maschine · Zeit · Material · Menge</span></div>
-        <div id="rcJobs">${st.jobs.map(jobRow).join('')}</div>
+        <div>${st.jobs.map(jobRow).join('')}</div>
         <button type="button" class="small secondary" data-add="jobs">+ weiterer Druck / Laser</button></div>
       <div class="rcsec"><div class="rchead"><b>👩‍🔧 Arbeitszeit</b><span class="tiny muted">Wer · Tätigkeit · Zeit</span></div>
-        <div id="rcArbeit">${st.arbeit.map(arbRow).join('')}</div>
+        <div>${st.arbeit.map(arbRow).join('')}</div>
         <button type="button" class="small secondary" data-add="arbeit">+ weitere Arbeitszeit</button></div>
-      <div class="rcsec"><div class="rchead"><b>🎁 Zubehör / Extras</b><span class="tiny muted">Bezeichnung · Betrag</span></div>
-        <div id="rcExtras">${st.extras.map(extRow).join('')}</div>
+      <div class="rcsec"><div class="rchead"><b>🎁 Zubehör / Extras</b><span class="tiny muted">Bezeichnung · Betrag · 📦 aus Katalog</span></div>
+        <div>${st.extras.map(extRow).join('')}</div>
         <button type="button" class="small secondary" data-add="extras">+ weiteres Zubehör</button></div>
       <div class="form" style="margin-top:14px">
         <div class="f s6"><label>Ergibt Stück</label><input data-top="stueck" inputmode="decimal" value="${esc(st.stueck)}"></div>
         <div class="f s6"><label>Aufschlag %</label><input data-top="aufschlag_pct" inputmode="decimal" placeholder="${esc(S.aufschlag_pct)}" value="${esc(st.aufschlag_pct)}"></div>
       </div>
-      <datalist id="rcTaet">${RC_TAETIGKEIT.map((t) => `<option value="${esc(t)}">`).join('')}</datalist>
-    </div></div>
-    <div class="card"><div class="ch"><h3>Ergebnis</h3></div><div class="cb" id="rcOut"><div class="muted">Werte eingeben …</div></div></div>
-  </div>`;
-  const form = $('#rcForm');
-  let timer;
-  const body = () => ({
-    jobs: st.jobs.map((j) => ({ machine_id: j.machine_id || null, material_id: j.material_id || null, dauer_h: parseHours(j.dauer_h), menge: parseNum(j.menge) })),
-    arbeit: st.arbeit.map((a) => ({ person_id: a.person_id || null, taetigkeit: a.taetigkeit, stunden: parseHours(a.stunden) })),
-    extras: st.extras.map((x) => ({ bezeichnung: x.bezeichnung, betrag: parseNum(x.betrag) })),
-    stueck: parseNum(st.stueck), aufschlag_pct: parseNum(st.aufschlag_pct),
-  });
+      <datalist id="rcTaet">${RC_TAETIGKEIT.map((t) => `<option value="${esc(t)}">`).join('')}</datalist>`;
+  };
   const calc = async () => {
-    const b = body();
-    try {
-      const r = await api('POST', '/api/rechner', b);
-      const sd = r.satz_detail;
-      const h = (arr, k) => arr.reduce((s, x) => s + (+x[k] || 0), 0);
-      const nJobs = b.jobs.filter((j) => j.dauer_h || j.menge).length;
-      $('#rcOut').innerHTML = `
-        <div class="muted small">Empfohlener Preis pro Stück ${r.ust_satz ? '(netto)' : ''}</div>
-        <div class="result-big">${eur(r.netto_stueck_gerundet)}</div>
-        ${r.ust_satz ? `<div class="muted">brutto ${eur(r.brutto_stueck)} inkl. ${num(r.ust_satz)} % USt</div>` : ''}
-        ${r.stueck > 1 ? `<div class="muted">gesamt für ${num(r.stueck)} Stück: <b>${eur(r.netto_gerundet)}</b></div>` : ''}
-        <div class="stackbar" style="margin-top:16px">${r.selbstkosten ? [['maschine', r.maschine], ['material', r.material], ['arbeit', r.arbeit], ['fremd', r.extra]].map(([c, v]) => `<div class="c-${c}" style="width:${(v / r.selbstkosten) * 100}%"></div>`).join('') : ''}</div>
-        <div class="calcrow"><span><span class="legend-dot c-maschine"></span>Maschine${sd ? ` <span class="tiny muted">(${eur3(sd.satz)}/h: Abschreibung ${eur3(sd.abschreibung)}, Verschleiß ${eur3(sd.verschleiss)}, Strom ${eur3(sd.strom)})</span>` : ` <span class="tiny muted">(${nJobs} Drucke · ${hm(h(b.jobs, 'dauer_h'))} h)</span>`}</span><span>${eur(r.maschine)}</span></div>
-        <div class="calcrow"><span><span class="legend-dot c-material"></span>Material${+S.ausschuss_pct ? ` <span class="tiny muted">(inkl. ${num(S.ausschuss_pct)} % Ausschuss)</span>` : ''}</span><span>${eur(r.material)}</span></div>
-        <div class="calcrow"><span><span class="legend-dot c-arbeit"></span>Arbeitszeit <span class="tiny muted">(${hm(h(b.arbeit, 'stunden'))} h)</span></span><span>${eur(r.arbeit)}</span></div>
-        <div class="calcrow"><span><span class="legend-dot c-fremd"></span>Zubehör / Extras</span><span>${eur(r.extra)}</span></div>
-        <div class="calcrow"><b>Selbstkosten</b><b>${eur(r.selbstkosten)}</b></div>
-        <div class="calcrow"><span>+ ${num(r.aufschlag_pct)} % Aufschlag</span><span>${eur(r.netto)}</span></div>
-        <div class="calcrow"><span>Gewinn (über Stundenlohn hinaus)</span><span class="okc">${eur(r.netto_gerundet - r.selbstkosten)}</span></div>
-        <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap"><button id="rcOrder">Als neuen Auftrag anlegen</button><button class="secondary" id="rcReset">Zurücksetzen</button></div>`;
-      $('#rcOrder').onclick = () => rcToOrder(b, r);
-      $('#rcReset').onclick = () => { rcState = null; routes.rechner(); };
-    } catch (e) { $('#rcOut').innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+    const b = calcBody(st);
+    try { onResult(await api('POST', '/api/rechner', b), b); } catch (e) { onResult(null, b, e); }
   };
   const later = () => { clearTimeout(timer); timer = setTimeout(calc, 250); };
   const store = (el) => {
@@ -1082,23 +1174,65 @@ routes.rechner = () => {
     item[el.dataset.k] = ['machine_id', 'material_id', 'person_id'].includes(el.dataset.k) ? (+el.value || null) : el.value;
     if (el.dataset.k === 'machine_id') { syncMaterialSelect(row); item.material_id = +$('[name=material_id]', row).value || null; }
     if (el.dataset.k === 'machine_id' || el.dataset.k === 'material_id') $('[name=menge]', row).placeholder = rcMengePh(item.material_id);
+    if (row.dataset.g === 'extras' && el.dataset.k === 'menge') { const k = $('.rc-kat', row); if (k) k.textContent = eur(katBetrag(item)); }
   };
-  form.addEventListener('input', (e) => { store(e.target); later(); });
-  form.addEventListener('change', (e) => { store(e.target); calc(); });
-  form.addEventListener('click', (e) => {
+  box.addEventListener('input', (e) => { store(e.target); later(); });
+  box.addEventListener('change', (e) => { store(e.target); calc(); });
+  box.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.matches('input')) e.preventDefault(); });
+  box.addEventListener('click', (e) => {
     const add = e.target.closest('[data-add]');
     if (add) {
       const g = add.dataset.add;
       st[g].push(g === 'jobs' ? rcNewJob((st.jobs[st.jobs.length - 1] || {}).machine_id) : g === 'arbeit' ? rcNewArbeit() : rcNewExtra());
-      routes.rechner();
-      const rows = $$(`[data-g="${g}"]`); const last = rows[rows.length - 1];
+      draw();
+      const rows = $$(`[data-g="${g}"]`, box); const last = rows[rows.length - 1];
       if (last) $(g === 'arbeit' ? '[data-k=stunden]' : 'input', last).focus();
       return;
     }
+    const k = e.target.closest('[data-kat]');
+    if (k) {
+      const i = +k.dataset.kat;
+      pickKatalog((r) => { st.extras[i] = { ...st.extras[i], ...r, betrag: '' }; draw(); calc(); });
+      return;
+    }
     const r = e.target.closest('[data-rm]');
-    if (r && !r.disabled) { st[r.dataset.rm].splice(+r.dataset.i, 1); routes.rechner(); }
+    if (r && !r.disabled) { st[r.dataset.rm].splice(+r.dataset.i, 1); draw(); calc(); }
   });
+  draw();
   calc();
+  return { recalc: calc };
+}
+
+routes.rechner = () => {
+  rcState = rcState || rcEmpty();
+  view.innerHTML = `<div class="pagehead"><h1>🧮 Schnellrechner</h1><span class="sub">Was kostet's – und was sollten wir verlangen?</span></div>
+  <div class="grid2e">
+    <div class="card"><div class="ch"><h3>Eingaben</h3></div><div class="cb" id="rcForm"></div></div>
+    <div class="card"><div class="ch"><h3>Ergebnis</h3></div><div class="cb" id="rcOut"><div class="muted">Werte eingeben …</div></div></div>
+  </div>`;
+  mountCalc($('#rcForm'), rcState, (r, b, err) => {
+    if (!r) { $('#rcOut').innerHTML = `<div class="err">${esc(err ? err.message : '')}</div>`; return; }
+    const sd = r.satz_detail;
+    const h = (arr, k) => arr.reduce((s, x) => s + (+x[k] || 0), 0);
+    const nJobs = b.jobs.filter((j) => j.dauer_h || j.menge).length;
+    $('#rcOut').innerHTML = `
+      <div class="muted small">Empfohlener Preis pro Stück ${r.ust_satz ? '(netto)' : ''}</div>
+      <div class="result-big">${eur(r.netto_stueck_gerundet)}</div>
+      ${r.ust_satz ? `<div class="muted">brutto ${eur(r.brutto_stueck)} inkl. ${num(r.ust_satz)} % USt</div>` : ''}
+      ${r.stueck > 1 ? `<div class="muted">gesamt für ${num(r.stueck)} Stück: <b>${eur(r.netto_gerundet)}</b></div>` : ''}
+      <div class="stackbar" style="margin-top:16px">${r.selbstkosten ? [['maschine', r.maschine], ['material', r.material], ['arbeit', r.arbeit], ['fremd', r.extra]].map(([c, v]) => `<div class="c-${c}" style="width:${(v / r.selbstkosten) * 100}%"></div>`).join('') : ''}</div>
+      <div class="calcrow"><span><span class="legend-dot c-maschine"></span>Maschine${sd ? ` <span class="tiny muted">(${eur3(sd.satz)}/h: Abschreibung ${eur3(sd.abschreibung)}, Verschleiß ${eur3(sd.verschleiss)}, Strom ${eur3(sd.strom)})</span>` : ` <span class="tiny muted">(${nJobs} Drucke · ${hm(h(b.jobs, 'dauer_h'))} h)</span>`}</span><span>${eur(r.maschine)}</span></div>
+      <div class="calcrow"><span><span class="legend-dot c-material"></span>Material${+S.ausschuss_pct ? ` <span class="tiny muted">(inkl. ${num(S.ausschuss_pct)} % Ausschuss)</span>` : ''}</span><span>${eur(r.material)}</span></div>
+      <div class="calcrow"><span><span class="legend-dot c-arbeit"></span>Arbeitszeit <span class="tiny muted">(${hm(h(b.arbeit, 'stunden'))} h)</span></span><span>${eur(r.arbeit)}</span></div>
+      <div class="calcrow"><span><span class="legend-dot c-fremd"></span>Zubehör / Extras</span><span>${eur(r.extra)}</span></div>
+      <div class="calcrow"><b>Selbstkosten</b><b>${eur(r.selbstkosten)}</b></div>
+      <div class="calcrow"><span>+ ${num(r.aufschlag_pct)} % Aufschlag</span><span>${eur(r.netto)}</span></div>
+      <div class="calcrow"><span>Gewinn (über Stundenlohn hinaus)</span><span class="okc">${eur(r.netto_gerundet - r.selbstkosten)}</span></div>
+      <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap"><button id="rcOrder">Als neuen Auftrag anlegen</button><button class="secondary" id="rcProd">📦 Als Produkt anlegen</button><button class="secondary" id="rcReset">Zurücksetzen</button></div>`;
+    $('#rcOrder').onclick = () => rcToOrder(b, r);
+    $('#rcProd').onclick = () => editProduct(null, { kalkulation: JSON.parse(JSON.stringify(rcState)) });
+    $('#rcReset').onclick = () => { rcState = null; routes.rechner(); };
+  });
 };
 
 function rcToOrder(b, r) {
@@ -1113,7 +1247,10 @@ function rcToOrder(b, r) {
       if (a.stunden) await api('POST', '/api/t/order_times', { order_id: order.id, person_id: a.person_id, stunden: a.stunden, taetigkeit: a.taetigkeit || 'Arbeitszeit' });
     }
     for (const x of b.extras) {
-      if (x.betrag) await api('POST', '/api/t/order_costs', { order_id: order.id, bezeichnung: x.bezeichnung || 'Zubehör / Extras', betrag: x.betrag });
+      if (!x.betrag) continue;
+      const kat = x.product_id || x.material_id;
+      await api('POST', '/api/t/order_costs', { order_id: order.id, bezeichnung: x.bezeichnung || 'Zubehör / Extras', betrag: x.betrag,
+        ...(kat ? { product_id: x.product_id, material_id: x.material_id, menge: x.menge, einzelpreis: x.einzelpreis } : {}) });
     }
     await api('POST', '/api/t/order_items', { order_id: order.id, bezeichnung: order.titel, farbe_material: [...new Set(mats)].join(', '), menge: r.stueck, einheit: 'Stk', einzelpreis: r.netto_stueck_gerundet });
     if (b.aufschlag_pct != null) await api('PUT', `/api/t/orders/${order.id}`, { aufschlag_pct: b.aufschlag_pct });
@@ -1287,7 +1424,7 @@ routes.produkte = () => {
       <div class="tile"><span>Lagerwert (Verkaufspreis)</span><b>${eur(wert)}</b><small>netto</small></div>
       <div class="tile"><span>ausverkauft</span><b class="${leer ? 'warnc' : ''}">${leer}</b></div>`;
     $('#prList').innerHTML = list.length ? `<table class="tbl"><thead><tr><th>Produkt</th><th>Kategorie</th><th>Farbe / Material</th><th class="num">Preis</th><th class="num">Bestand</th><th></th></tr></thead><tbody>
-      ${list.map((p) => `<tr class="click" data-id="${p.id}" style="${p.aktiv ? '' : 'opacity:.5'}"><td>${p.artikelnr ? `<span class="muted small">${esc(p.artikelnr)}</span> ` : ''}<b>${esc(p.name)}</b>${p.beschreibung ? `<div class="sub">${esc(p.beschreibung)}</div>` : ''}</td>
+      ${list.map((p) => `<tr class="click" data-id="${p.id}" style="${p.aktiv ? '' : 'opacity:.5'}"><td>${p.artikelnr ? `<span class="muted small">${esc(p.artikelnr)}</span> ` : ''}<b>${esc(p.name)}</b>${p.kalkulation ? ' <span title="mit Kalkulation">🧮</span>' : ''}${p.beschreibung ? `<div class="sub">${esc(p.beschreibung)}</div>` : ''}</td>
         <td>${esc(p.kategorie || '')}</td><td>${esc(p.farbe_material || '')}</td>
         <td class="num nowrap">${eur(p.preis)}${p.einheit && p.einheit !== 'Stk' ? ` / ${esc(p.einheit)}` : ''}${+p.herstellkosten ? `<div class="tiny muted">Kosten ${eur(p.herstellkosten)}</div>` : ''}</td>
         <td class="num nowrap ${p.bestand != null && p.bestand <= 0 ? 'err' : ''}">${p.bestand == null ? '<span class="dim">–</span>' : num(p.bestand) + ' ' + esc(p.einheit || 'Stk')}</td>
@@ -1306,9 +1443,14 @@ routes.produkte = () => {
   $('#prSell').onclick = () => docEditor({ typ: 'rechnung' });
   draw();
 };
-window.editProduct = (id) => {
-  const p = id ? byId(D.products, id) : { einheit: 'Stk', aktiv: 1 };
+window.editProduct = (id, preset = {}) => {
+  const p = id ? byId(D.products, id) : { einheit: 'Stk', aktiv: 1, ...preset };
   const kats = [...new Set(D.products.map((x) => x.kategorie).filter(Boolean))];
+  let st = null;
+  try { st = typeof p.kalkulation === 'string' ? JSON.parse(p.kalkulation || 'null') : p.kalkulation; } catch { st = null; }
+  const hatKalk = !!st;
+  st = st || rcEmpty();
+  let last = null;
   openForm({
     title: id ? `${p.name} bearbeiten` : 'Neues Produkt', wide: true,
     fields: [
@@ -1316,16 +1458,40 @@ window.editProduct = (id) => {
       { k: 'kategorie', l: 'Kategorie', s: 6, list: kats.length ? kats : ['Anhänger', 'Deko', 'Geschenke', 'Gravur', 'Untersetzer'] },
       { k: 'farbe_material', l: 'Farbe / Material', s: 6 },
       { k: 'beschreibung', l: 'Beschreibung (steht auf der Rechnung)', t: 'textarea', rows: 2 },
+      { t: 'html', html: `<details class="pkalk" id="pKalk" ${hatKalk || preset.kalkulation ? 'open' : ''}><summary>🧮 Kalkulation – wie im Schnellrechner <span class="muted small" id="pKalkSum"></span></summary>
+        <div class="pkalk-in" id="pKalkBox"></div><div class="pkalk-res" id="pKalkRes"></div></details>` },
       { k: 'preis', l: `Verkaufspreis €${S.kleinunternehmer === '1' ? '' : ' (netto)'}`, t: 'num', s: 4 },
       { k: 'einheit', l: 'Einheit', s: 4, list: ['Stk', 'Set', 'Paar', 'm', 'pausch.'] },
-      { k: 'herstellkosten', l: 'Herstellkosten € (optional)', t: 'num', s: 4, hint: 'z. B. aus dem Schnellrechner' },
+      { k: 'herstellkosten', l: 'Herstellkosten € pro Stück', t: 'num', s: 4, hint: 'kommt aus der Kalkulation – oder selbst eintragen' },
       { k: 'bestand', l: 'Lagerbestand', t: 'num', s: 4, hint: 'leer = Lager nicht mitzählen' },
       { k: 'notizen', l: 'Notizen (intern)', t: 'textarea', rows: 2, s: 8 },
       { k: 'aktiv', l: 'aktiv (im Katalog auswählbar)', t: 'check' },
     ],
     values: p,
-    onSave: async (v) => { await api(id ? 'PUT' : 'POST', id ? `/api/t/products/${id}` : '/api/t/products', v); await refresh(); toast('Gespeichert'); },
+    onSave: async (v) => {
+      v.kalkulation = last && last.selbstkosten > 0 ? JSON.stringify(st) : null;
+      await api(id ? 'PUT' : 'POST', id ? `/api/t/products/${id}` : '/api/t/products', v); await refresh(); toast('Gespeichert');
+    },
     onDelete: id ? async () => { await api('DELETE', `/api/t/products/${id}`); await refresh(); } : null,
+    after: (el) => {
+      const fmt = (x) => nf2.format(x);
+      mountCalc($('#pKalkBox', el), st, (r) => {
+        last = r;
+        const res = $('#pKalkRes', el);
+        if (!r || !r.selbstkosten) { res.innerHTML = '<div class="muted small">Druckzeiten, Arbeit oder Zubehör eintragen – dann werden Herstellkosten und Preis vorgeschlagen.</div>'; $('#pKalkSum', el).textContent = ''; return; }
+        const hk = r2(r.selbstkosten / r.stueck);
+        res.innerHTML = `<div class="calcrow"><span>Selbstkosten pro Stück <span class="tiny muted">(Maschine ${eur(r.maschine)} · Material ${eur(r.material)} · Arbeit ${eur(r.arbeit)} · Zubehör ${eur(r.extra)}${r.stueck > 1 ? ` ÷ ${num(r.stueck)} Stk` : ''})</span></span><b>${eur(hk)}</b></div>
+          <div class="calcrow"><span>+ ${num(r.aufschlag_pct)} % → empfohlener Preis</span><b>${eur(r.netto_stueck_gerundet)}</b></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"><button type="button" class="small" id="pTake">Preis ${eur(r.netto_stueck_gerundet)} übernehmen</button></div>`;
+        $('#pKalkSum', el).textContent = `· Herstellkosten ${eur(hk)} · empfohlen ${eur(r.netto_stueck_gerundet)}`;
+        // Herstellkosten folgen der Kalkulation, der Preis nur auf Knopfdruck (oder wenn noch leer)
+        $('[name=herstellkosten]', el).value = fmt(hk);
+        const pr = $('[name=preis]', el);
+        if (!pr.value.trim() || pr.dataset.auto === '1') { pr.value = fmt(r.netto_stueck_gerundet); pr.dataset.auto = '1'; }
+        $('#pTake', el).onclick = () => { pr.value = fmt(r.netto_stueck_gerundet); pr.dataset.auto = '1'; };
+      });
+      $('[name=preis]', el).addEventListener('input', (e) => { e.target.dataset.auto = '0'; });
+    },
   });
 };
 function stockIn(p) {
@@ -1739,6 +1905,10 @@ async function setHA() {
     { k: 'ha_token', l: 'Langlebiges Zugangstoken', t: 'password', s: 6, ph: S.ha_token_set ? '•••••• (gespeichert)' : 'eyJ…' },
     { k: 'ha_listen', l: 'Druckprotokoll-Listen (Komma-getrennt)', hint: 'Die Zuordnung zur Maschine steht bei der Maschine („HA-Druckprotokoll“) oder wird am Namen erkannt (a1, p1s, a2l, x2d).' },
     { k: 'ha_import_ab', l: 'Nur Drucke ab diesem Datum übernehmen (optional)', t: 'date', s: 6 },
+    { t: 'h4', l: 'Auftragstermine nach Home Assistant' },
+    { k: 'ha_termine_aktiv', l: 'Aufträge mit Fertigstellungstermin in eine HA-To-do-Liste übertragen', t: 'check', s: 12 },
+    { k: 'ha_termine_liste', l: 'To-do-Liste in Home Assistant', s: 6, ph: 'todo.werkstatt_termine', hint: 'In HA unter Einstellungen → Geräte & Dienste → Integration hinzufügen → „Lokale To-do-Liste“, Name „Werkstatt Termine“.' },
+    { t: 'html', html: `<div class="f s6"><label>&nbsp;</label><button type="button" class="secondary" id="haTermine">Termine jetzt übertragen</button>${S.ha_termine_letzt ? `<div class="hint">Zuletzt ${esc(S.ha_termine_letzt)}: <span class="${S.ha_termine_status.startsWith('ok') ? 'okc' : 'err'}">${esc(S.ha_termine_status.replace(/^(ok|fehler): /, ''))}</span></div>` : ''}</div>` },
   ], { extraButtons: '<button type="button" class="secondary" id="haTest">Verbindung testen</button><button type="button" class="secondary" id="haNow">Jetzt abrufen</button>', after: () => setHA() });
   $('#setBody').innerHTML = `<div class="grid2"><div class="card"><div class="cb">${f.html}</div></div>
     <div><div class="card"><div class="ch"><h3>So funktioniert's</h3></div><div class="cb small">
@@ -1748,6 +1918,10 @@ async function setHA() {
         <li>Eingestuft wird per Push-Knopf oder hier in der Werkstatt – beides landet überall.</li>
         <li>Gewerbliche Drucke ordnest du einem Auftrag zu: Maschinenzeit, Filament und der <b>gemessene Strom</b> fließen in die Kalkulation.</li>
       </ol>
+      <h4 style="margin:14px 0 6px">Auftragstermine</h4>
+      Jeder Auftrag mit „fertig bis“-Datum wird ein Eintrag in der To-do-Liste – Titel <b>„A-2026-001 Auftrag (Kunde)“</b>, Fälligkeit = Fertigstellungstermin.
+      Änderungen an Titel, Termin, Kunde und Status werden übernommen, fertige Aufträge abgehakt, stornierte/gelöschte entfernt.
+      Von dort kann eine HA-Automation die Termine später z. B. in den Google-Kalender übernehmen.
       <h4 style="margin:14px 0 6px">Zugangstoken erstellen</h4>
       In Home Assistant links unten auf deinen Namen → Reiter <b>Sicherheit</b> → ganz unten <b>Langlebige Zugangstoken → Token erstellen</b>, Name z. B. „Werkstatt“. Den angezeigten Token hier einfügen (er wird nur einmal angezeigt).
       </div></div>
@@ -1757,4 +1931,7 @@ async function setHA() {
     try { const r = await api('POST', '/api/ha/test'); toast('✔ ' + r.listen.map((l) => `${l.liste.replace('todo.', '')}: ${l.eintraege}`).join(' · '), 'ok', 8000); } catch (err) { fail(err); }
   });
   $('#haNow').onclick = (e) => saveThen(e.target, () => haSyncNow());
+  $('#haTermine').onclick = (e) => saveThen(e.target, async () => {
+    try { const r = await api('POST', '/api/ha/termine'); toast('Termine: ' + r.text, r.ok ? 'ok' : 'warn', 8000); await reload(); setHA(); } catch (err) { fail(err); }
+  });
 }
