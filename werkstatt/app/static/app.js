@@ -899,6 +899,7 @@ window.docActions = (id) => {
       <div class="row total"><span>Gesamt</span><span>${eur(d.brutto)}</span></div>
       ${d.anzahlung ? `<div class="row"><span>davon angezahlt</span><span>${eur(d.anzahlung)}</span></div>` : ''}
       </div>
+      ${d.ablage ? `<div class="tiny muted" style="margin-top:8px">📁 Rechnungsablage: ${esc((S.smb_rechnungen_pfad || 'Rechnungen').split(/[\\/]/).filter(Boolean).pop())}/${esc(d.ablage)}</div>` : ''}
       ${isR && d.status === 'offen' ? `<div class="form" style="margin-top:14px"><div class="f s6"><label>Bezahlt am</label><input type="date" id="payDate" value="${today()}"></div></div>` : ''}`,
     footer: `<a class="button secondary" target="_blank" href="/api/documents/${d.id}/pdf">📄 PDF ansehen</a>
       <a class="button secondary" href="/api/documents/${d.id}/pdf?download=1">⬇</a>
@@ -1651,6 +1652,11 @@ async function setNetz() {
     { k: 'smb_ordner_auto', l: 'Ordner bei neuem Auftrag automatisch anlegen', t: 'check', s: 4 },
     { k: 'smb_pdf_kopieren', l: 'Rechnungen/Angebote als PDF in den Auftragsordner kopieren', t: 'check', s: 12 },
     { k: 'smb_unc_anzeige', l: 'So heißt der Ordner am Windows-PC (optional)', s: 12, ph: 'z. B. V:\\Werkstatt\\Auftraege', hint: 'Wenn ihr die Freigabe als Laufwerk verbunden habt, wird der kopierbare Pfad so angezeigt.' },
+    { t: 'h4', l: 'Rechnungsablage' },
+    { k: 'rechnungen_ablage', l: 'Jede Rechnung zusätzlich als PDF in den Rechnungsordner kopieren', t: 'check', s: 12 },
+    { k: 'smb_rechnungen_share', l: 'Freigabe', s: 4, ph: S.smb_auftraege_share || 'wie Auftragsordner', hint: 'leer = wie Auftragsordner' },
+    { k: 'smb_rechnungen_pfad', l: 'Ordner', s: 8, ph: 'Werkstatt/Rechnungen' },
+    { t: 'html', html: '<div class="hint">Ablage nach Jahr: <b>Rechnungen/2026/RE-2026-005 Anna Huber.pdf</b> – mit und ohne Auftrag. Stornierte Rechnungen bekommen „(storniert)“ im Namen, geänderte werden ersetzt. Bestehende Rechnungen werden nach dem Update automatisch abgelegt.</div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"><button type="button" class="small secondary" id="tR">Rechnungsordner testen</button><button type="button" class="small secondary" id="ablNow">Jetzt alle Rechnungen ablegen</button></div>' },
     { t: 'h4', l: 'Abgeschlossene Aufträge' },
     { k: 'ordner_abschluss', l: 'Ordner bezahlter Aufträge automatisch verschieben', t: 'check', s: 8 },
     { k: 'ordner_abschluss_name', l: 'Ordnername', s: 4, ph: 'Abgeschlossen' },
@@ -1680,6 +1686,13 @@ async function setNetz() {
   };
   $('#tA').onclick = async (e) => { await saveThen(e.target, () => test('auftraege', e.target)); };
   $('#tB').onclick = async (e) => { await saveThen(e.target, () => test('backup', e.target)); };
+  $('#tR').onclick = async (e) => { await saveThen(e.target, () => test('rechnungen', e.target)); };
+  $('#ablNow').onclick = async (e) => {
+    await saveThen(e.target, async () => {
+      e.target.disabled = true;
+      try { const r = await api('POST', '/api/ablage/sync'); toast(r.text + (r.fehler && r.fehler.length ? ' – ' + r.fehler[0] : ''), r.ok ? 'ok' : 'warn', 9000); await reload(); } catch (err) { fail(err); } finally { e.target.disabled = false; }
+    });
+  };
   $('#archNow').onclick = async (e) => {
     await saveThen(e.target, async () => {
       e.target.disabled = true;

@@ -139,11 +139,16 @@ def sync_all():
 
 def _loop():
     time.sleep(60)
+    from . import ablage  # erst hier, sonst zirkulärer Import
     while True:
         try:
             sync_all()
         except Exception:  # pragma: no cover
             log.exception("Abgleich der Auftragsordner fehlgeschlagen")
+        try:
+            ablage.sync_all()
+        except Exception:  # pragma: no cover
+            log.exception("Abgleich der Rechnungsablage fehlgeschlagen")
         time.sleep(15 * 60)
 
 

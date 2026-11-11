@@ -1,6 +1,6 @@
 """Zugriff auf das Netzlaufwerk (SMB) oder einen lokalen/gemounteten Ordner.
 
-Zwei Bereiche: 'auftraege' (Auftragsordner) und 'backup' (Datenbank-Sicherungen).
+Bereiche: 'auftraege' (Auftragsordner), 'rechnungen' (Rechnungsablage) und 'backup' (Datenbank-Sicherungen).
 """
 import os
 import re
@@ -41,17 +41,22 @@ class FS:
 
     def __init__(self, area):
         self.area = area
-        lokal = settings.get("lokal_auftraege").strip() if area == "auftraege" else ""
+        lokal = settings.get("lokal_auftraege").strip() if area in ("auftraege", "rechnungen") else ""
         if lokal:
             self.kind = "lokal"
-            self.root_parts = []
+            self.root_parts = clean_rel(settings.get("smb_rechnungen_pfad") or "Rechnungen")[-1:] \
+                if area == "rechnungen" else []
             self.base = lokal
             self.sep = os.sep
             self.mod = os
             return
         host = settings.get("smb_host").strip().strip("\\/")
-        share = settings.get("smb_auftraege_share" if area == "auftraege" else "backup_share").strip().strip("\\/")
-        sub = settings.get("smb_auftraege_pfad" if area == "auftraege" else "backup_pfad")
+        if area == "rechnungen":
+            share = (settings.get("smb_rechnungen_share").strip() or settings.get("smb_auftraege_share")).strip("\\/ ")
+            sub = settings.get("smb_rechnungen_pfad") or "Werkstatt/Rechnungen"
+        else:
+            share = settings.get("smb_auftraege_share" if area == "auftraege" else "backup_share").strip().strip("\\/")
+            sub = settings.get("smb_auftraege_pfad" if area == "auftraege" else "backup_pfad")
         if not host or not share:
             raise StorageError("Netzlaufwerk ist nicht eingerichtet (Einstellungen → Netzlaufwerk & Backup).")
         try:
@@ -90,7 +95,7 @@ class FS:
         if disp:
             return "\\".join([disp] + rp)
         if self.kind == "lokal":
-            return os.path.join(self.base, *rp)
+            return os.path.join(self.base, *(self.root_parts + rp))
         return "\\".join([self.base] + self.root_parts + rp)
 
     # ----- Operationen -----

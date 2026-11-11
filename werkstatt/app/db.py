@@ -265,7 +265,7 @@ COLUMNS = {
     "order_costs": {"product_id": "INTEGER", "material_id": "INTEGER", "menge": "REAL", "einzelpreis": "REAL"},
     "products": {"kalkulation": "TEXT"},     # gespeicherte Kalkulation (JSON wie im Schnellrechner)
     "order_items": {"farbe_material": "TEXT", "personalisierung": "TEXT"},
-    "documents": {"anzahlung": "REAL"},
+    "documents": {"anzahlung": "REAL", "ablage": "TEXT"},   # ablage = Pfad in der Rechnungsablage (NAS)
     "machines": {"ha_liste": "TEXT"},
     "order_jobs": {"kwh": "REAL"},
 }

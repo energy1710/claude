@@ -29,6 +29,13 @@ Läuft als eigener Container (LXC) auf Proxmox.
 
 ## Versionen
 
+### 1.6.0
+- **Rechnungsablage auf dem NAS**: Jede Rechnung (mit und ohne Auftrag) wird zusätzlich als PDF nach
+  `Werkstatt/Rechnungen/<Jahr>/RE-2026-005 Kunde.pdf` kopiert (Freigabe wie Auftragsordner, änderbar unter
+  Einstellungen → Netzlaufwerk & Backup). Stornierte Rechnungen heißen „… (storniert).pdf“, geänderte werden ersetzt,
+  gelöschte entfernt. Bestehende Rechnungen werden nach dem Update automatisch abgelegt; ist das NAS nicht erreichbar,
+  wird es alle 15 Minuten erneut versucht. Angebote kommen nicht in die Ablage.
+
 ### 1.5.0
 - **Produkte aus Aufträgen**: Knopf „📦 Als Produkt anlegen“ bei „Kosten & Preis“ im Auftrag – übernimmt Name,
   Beschreibung und die komplette Kalkulation (Drucke, Arbeitszeit, Zubehör, Stückzahl).

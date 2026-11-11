@@ -16,9 +16,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from . import archiv, backup, bestellung, calc, db, ha, images, pdf, seed, settings, storage
+from . import ablage, archiv, backup, bestellung, calc, db, ha, images, pdf, seed, settings, storage
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 for _noisy in ("smbprotocol", "smbclient", "spnego", "fontTools", "fpdf"):
@@ -368,7 +368,8 @@ def _load_all():
         d["prints"] = db.rows(c.execute("SELECT * FROM prints ORDER BY datum DESC, uhrzeit DESC, id DESC"))
         d["documents"] = db.rows(c.execute(
             "SELECT id, typ, nr, order_id, customer_id, datum, leistungsdatum, faellig, netto, ust_satz, ust, brutto,"
-            " kleinunternehmer, anzahlung, status, bezahlt_am, pdf, notizen, kunde_json, einleitung, schluss, positionen_json"
+            " kleinunternehmer, anzahlung, status, bezahlt_am, pdf, notizen, kunde_json, einleitung, schluss, positionen_json,"
+            " ablage"
             " FROM documents ORDER BY datum DESC, id DESC"))
     for doc in d["documents"]:
         doc["kunde"] = json.loads(doc.pop("kunde_json") or "{}")
@@ -529,6 +530,13 @@ def folder_abschluss(oid: int, body: AbschlussIn):
     with db.conn() as c:
         o = db.one(c.execute("SELECT ordner FROM orders WHERE id=?", (oid,)))
     return {"ordner": o["ordner"], "warning": warn}
+
+
+@app.post("/api/ablage/sync")
+def ablage_sync():
+    if not _storage_configured():
+        raise HTTPException(400, "Netzlaufwerk ist nicht eingerichtet")
+    return ablage.sync_all()
 
 
 @app.post("/api/archiv/sync")
@@ -790,6 +798,8 @@ def _render_doc(did, copy_smb=True):
                 path, "/".join(storage.clean_rel(d["ordner"]) + [f"{label} {fname}"]))
         except storage.StorageError as e:
             warn = f"PDF nicht ins Auftragsverzeichnis kopiert: {e}"
+    if copy_smb and d["typ"] == "rechnung":
+        warn = " ".join(x for x in (warn, ablage.sync_doc(did, force=True)) if x) or None
     return warn
 
 
@@ -962,6 +972,8 @@ def update_doc(did: int, body: DocUpd):
         warn = " ".join(x for x in (warn, archiv.sync_order_soon(d["order_id"])) if x) or None
     if d["order_id"] and body.status is not None:
         ha.termin_soon(d["order_id"])
+    if body.status is not None and not rerender and d["typ"] == "rechnung":
+        warn = " ".join(x for x in (warn, ablage.sync_doc(did)) if x) or None  # z. B. Storno → Dateiname
     return {"ok": True, "warning": warn}
 
 
@@ -985,6 +997,7 @@ def delete_doc(did: int):
         if _stock_active(d["typ"], d["status"]):
             _product_stock(c, json.loads(d["positionen_json"] or "[]"), +1)
         c.execute("DELETE FROM documents WHERE id=?", (did,))
+    ablage.remove(d.get("ablage"))
     if d.get("pdf"):
         try:
             os.remove(os.path.join(db.DOKU_DIR, d["pdf"]))

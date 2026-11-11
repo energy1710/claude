@@ -75,6 +75,9 @@ DEFAULTS = {
     "ha_termine_liste": "todo.werkstatt_termine",
     "ha_termine_letzt": "",
     "ha_termine_status": "",
+    "rechnungen_ablage": "1",          # jede Rechnung zusätzlich nach <Rechnungen>/<Jahr>/ kopieren
+    "smb_rechnungen_share": "",        # leer = gleiche Freigabe wie die Auftragsordner
+    "smb_rechnungen_pfad": "Werkstatt/Rechnungen",
     "ordner_abschluss": "1",           # bezahlte Aufträge nach <ordner_abschluss_name>/<Jahr>/ verschieben
     "ordner_abschluss_name": "Abgeschlossen",
     "lokal_auftraege": "",             # alternativ: lokaler/gemounteter Ordner
