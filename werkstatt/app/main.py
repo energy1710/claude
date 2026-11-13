@@ -18,7 +18,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import ablage, archiv, backup, bestellung, calc, db, ha, images, pdf, seed, settings, storage
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 for _noisy in ("smbprotocol", "smbclient", "spnego", "fontTools", "fpdf"):
@@ -134,9 +134,10 @@ TABLES = {
     "machines": ["name", "typ", "hersteller", "modell", "anschaffung_preis", "anschaffung_datum", "lebensdauer_h",
                  "leistung_w", "stunden_vorher", "wartung_eur_h", "farbe", "notizen", "aktiv", "ha_liste"],
     "wear_parts": ["machine_id", "name", "preis", "lebensdauer_h", "gewechselt_bei_h", "notizen"],
-    "materials": ["name", "typ", "hersteller", "farbe", "einheit", "preis", "bestand", "notizen", "aktiv"],
+    "materials": ["name", "typ", "hersteller", "farbe", "einheit", "preis", "bestand", "mindestbestand", "notizen",
+                  "aktiv"],
     "products": ["artikelnr", "name", "kategorie", "beschreibung", "farbe_material", "einheit", "preis",
-                 "herstellkosten", "bestand", "notizen", "aktiv", "kalkulation"],
+                 "herstellkosten", "bestand", "mindestbestand", "notizen", "aktiv", "kalkulation"],
     "orders": ["customer_id", "titel", "beschreibung", "status", "eingang", "termin", "ordner", "aufschlag_pct",
                "vertrieb", "uebergabe", "versand", "zahlungsart", "anzahlung", "zahlungsstatus", "zahlungsdatum",
                "wuensche", "notizen"],
@@ -152,7 +153,7 @@ TABLES = {
 NUMERIC = {"stundensatz", "verrechnungssatz", "anschaffung_preis", "lebensdauer_h", "leistung_w", "stunden_vorher",
            "wartung_eur_h", "preis", "gewechselt_bei_h", "bestand", "aufschlag_pct", "dauer_h", "menge", "stueck",
            "stunden", "betrag", "sort", "einzelpreis", "aktiv", "customer_id", "machine_id", "material_id",
-           "order_id", "person_id", "versand", "anzahlung", "kwh", "herstellkosten", "product_id"}
+           "order_id", "person_id", "versand", "anzahlung", "kwh", "herstellkosten", "product_id", "mindestbestand"}
 REQUIRED = {"persons": "name", "machines": "name", "wear_parts": "name", "materials": "name", "orders": "titel",
             "products": "name"}
 STATUS = ["anfrage", "angebot", "in_arbeit", "fertig", "abgeholt", "abgerechnet", "bezahlt", "storniert"]
@@ -1066,9 +1067,12 @@ def auswertung(jahr: int = 0):
     jahr = jahr or date.today().year
     d = _load_all()
     ys = str(jahr)
-    months = [{"monat": i, "umsatz": 0.0, "bezahlt": 0.0, "maschine": 0.0, "material": 0.0, "arbeit": 0.0,
-               "fremd": 0.0, "stunden": {}, "maschinen_h": {}} for i in range(1, 13)]
+    KOSTEN = ("maschine", "material", "arbeit", "fremd", "waren", "ausschuss")
+    months = [{"monat": i, "umsatz": 0.0, "bezahlt": 0.0, **{k: 0.0 for k in KOSTEN}, "stunden": {},
+               "maschinen_h": {}} for i in range(1, 13)]
     orders = {o["id"]: o for o in d["orders"]}
+    products = {p["id"]: p for p in d.get("products", [])}
+    machines = {m["id"]: m for m in d["machines"]}
 
     def mon(datum, oid=None):
         ds = datum or (orders.get(oid) or {}).get("eingang") or ""
@@ -1079,17 +1083,48 @@ def auswertung(jahr: int = 0):
         except (ValueError, IndexError):
             return None
 
-    kunden_umsatz = {}
+    kunden_umsatz, vertrieb, prod = {}, {}, {}
+    n_rechnungen = 0
+    # Vorjahr: ganzes Jahr und – für das laufende Jahr – bis zum selben Tag
+    vj = str(jahr - 1)
+    stichtag = f"{vj}{date.today().isoformat()[4:]}" if jahr == date.today().year else f"{vj}-12-31"
+    vorjahr = vorjahr_bis = 0.0
     for doc in d["documents"]:
         if doc["typ"] != "rechnung" or doc["status"] == "storniert":
             continue
+        ds = doc["datum"] or ""
+        if ds[:4] == vj:
+            vorjahr += doc["netto"] or 0
+            if ds <= stichtag:
+                vorjahr_bis += doc["netto"] or 0
         m = mon(doc["datum"])
-        if m:
-            m["umsatz"] += doc["netto"] or 0
-            if doc["status"] == "bezahlt":
-                m["bezahlt"] += doc["netto"] or 0
-            if doc["customer_id"]:
-                kunden_umsatz[doc["customer_id"]] = kunden_umsatz.get(doc["customer_id"], 0) + (doc["netto"] or 0)
+        if not m:
+            continue
+        n_rechnungen += 1
+        m["umsatz"] += doc["netto"] or 0
+        if doc["status"] == "bezahlt":
+            m["bezahlt"] += doc["netto"] or 0
+        if doc["customer_id"]:
+            kunden_umsatz[doc["customer_id"]] = kunden_umsatz.get(doc["customer_id"], 0) + (doc["netto"] or 0)
+        o = orders.get(doc["order_id"])
+        weg = ((o or {}).get("vertrieb") or "").strip() or ("ohne Angabe" if o else "Direktverkauf (ohne Auftrag)")
+        vertrieb[weg] = vertrieb.get(weg, 0) + (doc["netto"] or 0)
+        # Produkte: Bestseller und Wareneinsatz. Bei Rechnungen zu einem Auftrag stecken die Kosten schon im Auftrag.
+        for p in doc["positionen"]:
+            pid = p.get("product_id")
+            if not pid:
+                continue
+            menge = calc.f(p.get("menge"))
+            hk = calc.f((products.get(pid) or {}).get("herstellkosten"))
+            s = prod.setdefault(pid, {"menge": 0.0, "umsatz": 0.0, "kosten": 0.0, "ohne_hk": False})
+            s["menge"] += menge
+            s["umsatz"] += menge * calc.f(p.get("einzelpreis"))
+            s["kosten"] += menge * hk
+            s["name"] = (products.get(pid) or {}).get("name") or p.get("bezeichnung")
+            if not hk:
+                s["ohne_hk"] = True
+            if not doc["order_id"]:
+                m["waren"] += menge * hk
     for j in d["order_jobs"]:
         m = mon(j["datum"], j["order_id"])
         if m:
@@ -1105,16 +1140,28 @@ def auswertung(jahr: int = 0):
         m = mon(x["datum"], x["order_id"])
         if m:
             m["fremd"] += calc.f(x["betrag"])
+    # Ausschuss: als Müll eingestufte Drucke ohne Auftrag (mit Auftrag zählen sie dort als Kosten)
+    fil = [calc.f(x["preis"]) for x in d["materials"] if x["aktiv"] and x["typ"] == "filament" and x["einheit"] == "kg"]
+    kg_preis = (sum(fil) / len(fil)) if fil else 0
+    ausschuss_n = 0
+    for p in d.get("prints", []):
+        if p["art"] != "muell" or p["job_id"]:
+            continue
+        m = mon(p["datum"])
+        if m:
+            ma = machines.get(p["machine_id"])
+            m["ausschuss"] += calc.f(p["dauer_h"]) * (ma["satz"] if ma else 0) \
+                + calc.f(p["gramm"]) / 1000 * kg_preis * (1 + settings.num("ausschuss_pct", 0) / 100)
+            ausschuss_n += 1
     for m in months:
-        m["kosten"] = m["maschine"] + m["material"] + m["arbeit"] + m["fremd"]
+        m["kosten"] = sum(m[k] for k in KOSTEN)
         m["gewinn"] = m["umsatz"] - m["kosten"]
-        for k in ("umsatz", "bezahlt", "maschine", "material", "arbeit", "fremd", "kosten", "gewinn"):
+        for k in ("umsatz", "bezahlt", *KOSTEN, "kosten", "gewinn"):
             m[k] = calc.r2(m[k])
         m["stunden"] = {str(k): round(v, 2) for k, v in m["stunden"].items()}
         m["maschinen_h"] = {str(k): round(v, 2) for k, v in m["maschinen_h"].items()}
 
-    tot = {k: calc.r2(sum(m[k] for m in months)) for k in
-           ("umsatz", "bezahlt", "maschine", "material", "arbeit", "fremd", "kosten", "gewinn")}
+    tot = {k: calc.r2(sum(m[k] for m in months)) for k in ("umsatz", "bezahlt", *KOSTEN, "kosten", "gewinn")}
     offen = [x for x in d["documents"] if x["typ"] == "rechnung" and x["status"] == "offen"]
     custs = {k["id"]: k for k in d["customers"]}
     top = sorted(kunden_umsatz.items(), key=lambda kv: -kv[1])[:10]
@@ -1127,13 +1174,77 @@ def auswertung(jahr: int = 0):
             k = custs.get(o["customer_id"])
             auftraege.append({"id": o["id"], "nr": o["nr"], "titel": o["titel"], "status": o["status"],
                               "kunde": _kname(k), **o["kosten"]})
+    stunden = sum(sum(m["stunden"].values()) for m in months)
+    ohne_arbeit = tot["umsatz"] - (tot["kosten"] - tot["arbeit"])
     return {
         "jahr": jahr, "jahre": jahre, "monate": months, "summe": tot,
         "offen_anzahl": len(offen), "offen_summe": calc.r2(sum(x["brutto"] or 0 for x in offen)),
         "ueberfaellig": [x["id"] for x in offen if x.get("faellig") and x["faellig"] < date.today().isoformat()],
         "top_kunden": [{"id": cid, "name": _kname(custs.get(cid)), "umsatz": calc.r2(v)} for cid, v in top],
         "auftraege": auftraege,
+        "kennzahlen": {
+            "rechnungen": n_rechnungen,
+            "rechnung_schnitt": calc.r2(tot["umsatz"] / n_rechnungen) if n_rechnungen else 0,
+            "marge_pct": round(tot["gewinn"] / tot["umsatz"] * 100, 1) if tot["umsatz"] else None,
+            "stunden": round(stunden, 2),
+            "ohne_arbeit": calc.r2(ohne_arbeit),
+            "stundenlohn": calc.r2(ohne_arbeit / stunden) if stunden else None,
+            "vorjahr": calc.r2(vorjahr), "vorjahr_bis": calc.r2(vorjahr_bis),
+            "ausschuss_anzahl": ausschuss_n,
+        },
+        "vertrieb": sorted(({"name": k, "umsatz": calc.r2(v)} for k, v in vertrieb.items()), key=lambda x: -x["umsatz"]),
+        "produkte": sorted(({"id": pid, "name": s.get("name") or "?", "menge": round(s["menge"], 2),
+                             "umsatz": calc.r2(s["umsatz"]), "kosten": calc.r2(s["kosten"]),
+                             "gewinn": calc.r2(s["umsatz"] - s["kosten"]), "ohne_hk": s["ohne_hk"]}
+                            for pid, s in prod.items()), key=lambda x: -x["umsatz"])[:15],
     }
+
+
+class DupIn(BaseModel):
+    kalkulation: bool = True
+
+
+@app.post("/api/orders/{oid}/duplicate")
+def duplicate_order(oid: int, body: DupIn):
+    """Wiederholungsauftrag: Kopie mit Artikeln und (optional) Kalkulation, Status Anfrage, Datum heute."""
+    heute = date.today().isoformat()
+    with db.conn() as c:
+        o, _ = _order_ctx(c, oid)
+        keep = ("customer_id", "titel", "beschreibung", "aufschlag_pct", "vertrieb", "uebergabe", "versand",
+                "zahlungsart", "wuensche", "notizen")
+        data = {k: o[k] for k in keep}
+        data.update(nr=db.next_nr(c, "orders", settings.get("prefix_auftrag")), status="anfrage", eingang=heute,
+                    zahlungsstatus="offen")
+        cols = list(data)
+        new_id = c.execute(f"INSERT INTO orders({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
+                           [data[k] for k in cols]).lastrowid
+
+        def copy(table, fields, extra=None, stock=False):
+            for r in db.rows(c.execute(f"SELECT * FROM {table} WHERE order_id=? ORDER BY id", (oid,))):
+                row = {f: r[f] for f in fields}
+                row.update(order_id=new_id, **(extra or {}))
+                ks = list(row)
+                c.execute(f"INSERT INTO {table}({','.join(ks)}) VALUES({','.join('?' * len(ks))})",
+                          [row[k] for k in ks])
+                if stock:
+                    _row_stock(c, table, row, -1)
+
+        copy("order_items", ["sort", "bezeichnung", "beschreibung", "farbe_material", "personalisierung", "menge",
+                             "einheit", "einzelpreis"])
+        if body.kalkulation:
+            copy("order_jobs", ["machine_id", "material_id", "bezeichnung", "dauer_h", "menge", "stueck"],
+                 {"datum": heute, "notizen": f"geplant – aus {o['nr']}"}, stock=True)
+            copy("order_times", ["person_id", "stunden", "taetigkeit"], {"datum": heute})
+            copy("order_costs", ["bezeichnung", "betrag", "product_id", "material_id", "menge", "einzelpreis"],
+                 {"datum": heute}, stock=True)
+        row = db.one(c.execute("SELECT * FROM orders WHERE id=?", (new_id,)))
+    warn = None
+    if settings.flag("smb_ordner_auto") and _storage_configured():
+        try:
+            row["ordner"] = _ensure_folder(new_id)
+        except (storage.StorageError, HTTPException) as e:
+            warn = f"Auftragsordner konnte nicht angelegt werden: {getattr(e, 'detail', e)}"
+    return {"row": row, "warning": warn}
 
 
 def _kname(k):

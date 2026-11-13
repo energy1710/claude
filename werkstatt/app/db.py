@@ -263,7 +263,8 @@ COLUMNS = {
                "ordner_offen": "TEXT",           # ursprünglicher Pfad vor dem Verschieben ins Archiv
                "ha_termin_uid": "TEXT"},         # Eintrag in der Home-Assistant-Terminliste
     "order_costs": {"product_id": "INTEGER", "material_id": "INTEGER", "menge": "REAL", "einzelpreis": "REAL"},
-    "products": {"kalkulation": "TEXT"},     # gespeicherte Kalkulation (JSON wie im Schnellrechner)
+    "products": {"kalkulation": "TEXT", "mindestbestand": "REAL"},
+    "materials": {"mindestbestand": "REAL"},     # Warnung „nachbestellen“, wenn Bestand darunter fällt     # gespeicherte Kalkulation (JSON wie im Schnellrechner)
     "order_items": {"farbe_material": "TEXT", "personalisierung": "TEXT"},
     "documents": {"anzahlung": "REAL", "ablage": "TEXT"},   # ablage = Pfad in der Rechnungsablage (NAS)
     "machines": {"ha_liste": "TEXT"},

@@ -29,6 +29,17 @@ Läuft als eigener Container (LXC) auf Proxmox.
 
 ## Versionen
 
+### 1.7.0
+- **Auswertung erweitert**: Vorjahresvergleich, Marge, Verdienst pro Arbeitsstunde, Ø Rechnung, Kostenaufteilung,
+  Umsatz nach Vertriebsweg, Bestseller-Produkte, Liste „unter Kalkulation verkauft“.
+- **Auswertung korrigiert**: Direktverkäufe aus dem Produktkatalog zählen jetzt mit ihren Herstellkosten als
+  „Wareneinsatz“ (vorher 100 % Gewinn). Müll-Drucke ohne Auftrag zählen als „Ausschuss“.
+- **Mindestbestand** für Material und Produkte mit Warnliste auf der Übersicht.
+- **Auftrags-Board**: Aufträge als Spalten nach Status, Statuswechsel per Ziehen.
+- **Suche** über Aufträge, Kunden, Rechnungen, Produkte, Material (🔍, Taste `/` oder Strg+K).
+- **Auftrag duplizieren** (Wiederholungsauftrag) mit Artikeln und optional Kalkulation.
+- Übersicht: Kachel für den laufenden Monat; Produktliste zeigt die Marge.
+
 ### 1.6.0
 - **Rechnungsablage auf dem NAS**: Jede Rechnung (mit und ohne Auftrag) wird zusätzlich als PDF nach
   `Werkstatt/Rechnungen/<Jahr>/RE-2026-005 Kunde.pdf` kopiert (Freigabe wie Auftragsordner, änderbar unter

@@ -214,8 +214,13 @@ routes.uebersicht = async () => {
   D.machines.forEach((m) => D.wear_parts.filter((p) => p.machine_id === m.id && p.pct >= 90).forEach((p) => wartung.push({ m, p })));
   const sorted = [...open].sort((a, b) => (a.termin || '9999').localeCompare(b.termin || '9999'));
   const first = !D.orders.length && !D.customers.length;
+  const lager = lowStock();
+  const mi = new Date().getMonth();
+  const mon = aw.monate[mi]; const vor = mi > 0 ? aw.monate[mi - 1] : null;
+  const MN = ['Jänner', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
   view.innerHTML = `
   <div class="pagehead"><h1>Servus! 👋</h1>
+    <button class="secondary" onclick="openSearch()" title="Taste / oder Strg+K">🔍 Suchen</button>
     <button class="secondary" onclick="location.hash='#rechner'">🧮 Rechner</button>
     <button class="secondary" onclick="newCustomer()">+ Kunde</button>
     <button onclick="newOrder()">+ Neuer Auftrag</button></div>
@@ -226,7 +231,8 @@ routes.uebersicht = async () => {
     <div class="tile accent clickable" onclick="location.hash='#auftraege'"><span>Offene Aufträge</span><b>${open.length}</b><small>${due.length} in den nächsten 7 Tagen fällig</small></div>
     ${(D.prints || []).length ? `<div class="tile clickable" onclick="location.hash='#drucke'"><span>Drucke einstufen / zuordnen</span><b>${D.prints.filter((p) => p.art === 'offen' || (p.art === 'gewerbe' && !p.job_id)).length}</b><small>aus Home Assistant</small></div>` : ''}
     <div class="tile clickable" onclick="location.hash='#rechnungen'"><span>Offene Rechnungen</span><b>${eur(aw.offen_summe)}</b><small>${aw.offen_anzahl} Rechnung(en)${ueber.length ? `, <span class="err">${ueber.length} überfällig</span>` : ''}</small></div>
-    <div class="tile clickable" onclick="location.hash='#auswertung'"><span>Umsatz ${jahr} (netto)</span><b>${eur(aw.summe.umsatz)}</b><small>Gewinn ${eur(aw.summe.gewinn)}</small></div>
+    <div class="tile clickable" onclick="location.hash='#auswertung'"><span>Umsatz ${MN[mi]}</span><b>${eur(mon.umsatz)}</b><small>Gewinn ${eur(mon.gewinn)}${vor ? ` · ${MN[mi - 1]}: ${eur(vor.umsatz)}` : ''}</small></div>
+    <div class="tile clickable" onclick="location.hash='#auswertung'"><span>Umsatz ${jahr} (netto)</span><b>${eur(aw.summe.umsatz)}</b><small>Gewinn ${eur(aw.summe.gewinn)}${aw.kennzahlen.stundenlohn != null ? ` · ${eur(aw.kennzahlen.stundenlohn)}/h` : ''}</small></div>
     <div class="tile clickable" onclick="location.hash='#auswertung'"><span>Arbeitszeit ${jahr}</span><b>${hm(aw.monate.reduce((s, m) => s + Object.values(m.stunden).reduce((a, b) => a + b, 0), 0))} h</b>
       <small>${D.persons.map((p) => `${esc(p.name)} ${hm(aw.monate.reduce((s, m) => s + (m.stunden[p.id] || 0), 0))}`).join(' · ')}</small></div>
   </div>
@@ -244,6 +250,9 @@ routes.uebersicht = async () => {
         ${offeneDocs.length ? `<ul class="list-compact">${offeneDocs.slice(0, 8).map((d) => `<li class="click" onclick="docActions(${d.id})"><div class="grow"><b>${esc(d.nr)}</b> · ${esc(kname(d.kunde))}<div class="tiny muted">fällig ${dmy(d.faellig)}</div></div>
           <span class="num">${eur(d.brutto - (d.anzahlung || 0))}</span>${d.faellig < today() ? chip('ueberfaellig', 'überfällig') : ''}</li>`).join('')}</ul>` : '<div class="empty">Alles bezahlt 👍</div>'}
       </div>
+      ${lager.length ? `<div class="card"><div class="ch"><h3>Lager: nachbestellen / nachproduzieren</h3><span class="chip st-offen nodot">${lager.length}</span></div>
+        <ul class="list-compact">${lager.slice(0, 8).map((x) => `<li class="click" onclick="${x.art === 'material' ? `editMaterial(${x.id})` : `editProduct(${x.id})`}"><div class="grow">${x.art === 'material' ? '🧵' : '📦'} <b>${esc(x.name)}</b><div class="tiny muted">Mindestbestand ${num(x.min)} ${esc(x.einheit)}</div></div>
+          <span class="num ${x.bestand <= 0 ? 'err' : 'warnc'}">${num(x.bestand)} ${esc(x.einheit)}</span></li>`).join('')}</ul>${lager.length > 8 ? `<div class="cb tiny muted">… und ${lager.length - 8} weitere</div>` : ''}</div>` : ''}
       <div class="card"><div class="ch"><h3>Wartung & Verschleiß</h3><a href="#maschinen" class="small">Maschinen →</a></div>
         ${wartung.length ? `<ul class="list-compact">${wartung.map(({ m, p }) => `<li><div class="grow"><b>${esc(p.name)}</b><div class="tiny muted">${esc(m.name)} · ${num(p.stunden_seit)} von ${num(p.lebensdauer_h)} h</div></div>
           <div style="width:90px" class="bar ${p.pct >= 100 ? 'e' : 'w'}"><div style="width:${Math.min(100, p.pct)}%"></div></div></li>`).join('')}</ul>`
@@ -260,12 +269,14 @@ routes.uebersicht = async () => {
 //  Aufträge
 // ======================================================================
 let oFilter = { q: '', status: 'offen' };
+let oView = (() => { try { return localStorage.getItem('ws_oview') || 'liste'; } catch { return 'liste'; } })();
 routes.auftraege = () => {
   const counts = {};
   D.orders.forEach((o) => { counts[o.status] = (counts[o.status] || 0) + 1; });
   const nOpen = D.orders.filter((o) => OPEN_STATUS.includes(o.status)).length;
   view.innerHTML = `
   <div class="pagehead"><h1>Aufträge</h1><span class="sub">${D.orders.length} insgesamt</span>
+    <span class="seg" id="oView"><button data-v="liste">☰ Liste</button><button data-v="board">▦ Board</button></span>
     <a class="button secondary" href="/api/vorlage/bestellformular.pdf" target="_blank">🖨 Leeres Bestellformular</a>
     <button onclick="newOrder()">+ Neuer Auftrag</button></div>
   <div class="filterchips" id="oChips">
@@ -276,14 +287,19 @@ routes.auftraege = () => {
   <div class="card"><div class="tblwrap" id="oList"></div></div>`;
   const draw = () => {
     $$('#oChips button').forEach((b) => b.classList.toggle('on', b.dataset.s === oFilter.status));
+    $$('#oView button').forEach((b) => b.classList.toggle('on', b.dataset.v === oView));
+    const board = oView === 'board';
+    $('#oChips').style.display = board ? 'none' : '';
+    $('#oList').closest('.card').classList.toggle('plain', board);
     const q = oFilter.q.toLowerCase();
-    let list = D.orders.filter((o) => (oFilter.status === 'offen' ? OPEN_STATUS.includes(o.status) : !oFilter.status || o.status === oFilter.status));
+    let list = D.orders.filter((o) => (board ? true : oFilter.status === 'offen' ? OPEN_STATUS.includes(o.status) : !oFilter.status || o.status === oFilter.status));
     if (q) list = list.filter((o) => {
       const k = byId(D.customers, o.customer_id);
       const items = D.order_items.filter((i) => i.order_id === o.id).map((i) => `${i.bezeichnung} ${i.personalisierung} ${i.farbe_material}`).join(' ');
       return `${o.nr} ${o.titel} ${o.beschreibung} ${o.vertrieb} ${kname(k)} ${items}`.toLowerCase().includes(q);
     });
     list.sort((a, b) => b.id - a.id);
+    if (board) { orderBoard($('#oList'), list); return; }
     $('#oList').innerHTML = list.length ? `<table class="tbl"><thead><tr><th>Nr.</th><th>Auftrag</th><th>Kunde</th><th>Status</th><th>Zahlung</th><th>Eingang</th><th>Fertig bis</th>
       <th class="num">Kosten</th><th class="num">Umsatz</th><th class="num">Gewinn</th></tr></thead><tbody>
       ${list.map((o) => `<tr class="click" onclick="location.hash='#auftrag/${o.id}'"><td class="nowrap muted">${esc(o.nr)}</td>
@@ -295,6 +311,7 @@ routes.auftraege = () => {
   };
   $('#oChips').onclick = (e) => { const b = e.target.closest('button'); if (b) { oFilter.status = b.dataset.s; draw(); } };
   $('#oq').oninput = (e) => { oFilter.q = e.target.value; draw(); };
+  $('#oView').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; oView = b.dataset.v; try { localStorage.setItem('ws_oview', oView); } catch { /* egal */ } draw(); };
   draw();
 };
 
@@ -374,6 +391,7 @@ routes.auftrag = async (id) => {
         <span>📅 ${dmy(o.eingang)}</span>${o.termin ? `<span class="${o.termin < today() && OPEN_STATUS.includes(o.status) ? 'err' : ''}">⏰ fertig bis ${dmy(o.termin)}</span>` : ''}
         ${o.vertrieb ? `<span>🛍 ${esc(o.vertrieb)}</span>` : ''}${o.uebergabe ? `<span>${o.uebergabe === 'versand' ? '📦 Versand' : '🤝 Abholung'}</span>` : ''}</div></div>
     <select class="status" id="oStatus">${D.status_list.map((s) => opt(s, STATUS_LABEL[s], o.status)).join('')}</select>
+    <button class="secondary" id="oDup" title="Wiederholungsauftrag: Kopie mit Artikeln und Kalkulation anlegen">⧉ Duplizieren</button>
     <button class="secondary" id="oEdit">✎ Bearbeiten</button>
   </div>
   <div class="grid2">
@@ -468,6 +486,16 @@ routes.auftrag = async (id) => {
     } catch (err) { fail(err); }
   };
   $('#oEdit').onclick = () => editOrder(o);
+  $('#oDup').onclick = () => openForm({
+    title: `Auftrag ${o.nr} duplizieren`, saveLabel: 'Kopie anlegen',
+    fields: [
+      { t: 'html', html: `<div class="notice">Legt einen neuen Auftrag „${esc(o.titel)}“ für ${esc(kname(k))} an – Status „Anfrage“, Datum heute, mit allen bestellten Artikeln. Rechnungen, Bilder und Dateien werden nicht kopiert.</div>` },
+      { k: 'kalkulation', l: 'Kalkulation mitkopieren (Druck/Laser, Arbeitszeit, Zubehör) – als Plan für den neuen Auftrag', t: 'check' },
+      { t: 'html', html: '<div class="hint">Mit Kalkulation wird das eingeplante Material und Zubehör gleich vom Lager abgebucht – wie beim Erfassen von Hand.</div>' },
+    ],
+    values: { kalkulation: 1 },
+    onSave: async (v) => { const r = await api('POST', `/api/orders/${o.id}/duplicate`, { kalkulation: !!v.kalkulation }); warnIf(r); await reload(); toast(`Kopie ${r.row.nr} angelegt`); location.hash = '#auftrag/' + r.row.id; },
+  });
   $('#oProd').onclick = () => {
     const it = items[0] || {};
     editProduct(null, { name: o.titel, beschreibung: it.beschreibung || '', farbe_material: it.farbe_material || '', einheit: 'Stk', kalkulation: calcFromOrder(o),
@@ -1263,27 +1291,61 @@ function rcToOrder(b, r) {
 //  Auswertung
 // ======================================================================
 let awJahr = new Date().getFullYear();
+const KOSTEN_ART = [['maschine', 'Maschine', 'var(--info)'], ['material', 'Material', 'var(--teal)'], ['arbeit', 'Arbeitszeit', '#ff922b'],
+  ['fremd', 'Zubehör/Fremd', 'var(--violet)'], ['waren', 'Wareneinsatz Produkte', '#e668a7'], ['ausschuss', 'Ausschuss (Müll)', 'var(--err)']];
+const hbar = (v, max, color = 'var(--accent)') => `<div class="hbar"><div style="width:${max > 0 ? Math.max(2, (v / max) * 100) : 0}%;background:${color}"></div></div>`;
 routes.auswertung = async () => {
   const a = await api('GET', '/api/auswertung?jahr=' + awJahr);
   const M = ['Jän', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez'];
-  const s = a.summe;
+  const s = a.summe; const kz = a.kennzahlen;
   const hp = {};
   a.monate.forEach((m) => Object.entries(m.stunden).forEach(([p, h]) => { hp[p] = (hp[p] || 0) + h; }));
   const hm_ = {};
   a.monate.forEach((m) => Object.entries(m.maschinen_h).forEach(([p, h]) => { hm_[p] = (hm_[p] || 0) + h; }));
+  const laufend = awJahr === new Date().getFullYear();
+  const vj = laufend ? kz.vorjahr_bis : kz.vorjahr;
+  const delta = vj ? ((s.umsatz - vj) / vj) * 100 : null;
+  const unter = a.auftraege.filter((o) => o.umsatz > 0 && o.empfohlen > 0 && o.umsatz < o.empfohlen * 0.97 && o.status !== 'storniert')
+    .sort((x, y) => (y.empfohlen - y.umsatz) - (x.empfohlen - x.umsatz));
+  const vMax = Math.max(0, ...a.vertrieb.map((v) => v.umsatz));
+  const pMax = Math.max(0, ...a.produkte.map((p) => p.umsatz));
+  const kArten = KOSTEN_ART.filter(([k]) => s[k] > 0);
   view.innerHTML = `<div class="pagehead"><h1>Auswertung</h1>
     <select id="awJ">${a.jahre.map((j) => opt(j, j, awJahr)).join('')}</select>
     <a class="button secondary" href="/api/export/auftraege.csv?jahr=${awJahr}">⬇ Aufträge CSV</a>
     <a class="button secondary" href="/api/export/rechnungen.csv?jahr=${awJahr}">⬇ Rechnungen CSV</a></div>
   <div class="tiles">
-    <div class="tile accent"><span>Umsatz netto ${awJahr}</span><b>${eur(s.umsatz)}</b><small>davon bezahlt ${eur(s.bezahlt)}</small></div>
+    <div class="tile accent"><span>Umsatz netto ${awJahr}</span><b>${eur(s.umsatz)}</b>
+      <small>${delta == null ? `davon bezahlt ${eur(s.bezahlt)}` : `<span class="${delta >= 0 ? 'okc' : 'err'}">${delta >= 0 ? '▲' : '▼'} ${Math.round(Math.abs(delta))} %</span> zum Vorjahr${laufend ? ' (bis heute)' : ''}: ${eur(vj)}`}</small></div>
+    <div class="tile"><span>Gewinn (nach Stundenlohn)</span><b class="${s.gewinn < 0 ? 'err' : 'okc'}">${eur(s.gewinn)}</b><small>${kz.marge_pct == null ? 'Umsatz − alle Kosten' : `Marge ${num(kz.marge_pct)} % vom Umsatz`}</small></div>
+    <div class="tile"><span>Verdienst pro Arbeitsstunde</span><b>${kz.stundenlohn == null ? '–' : eur(kz.stundenlohn)}</b><small>${eur(kz.ohne_arbeit)} Ergebnis ÷ ${hm(kz.stunden)} h erfasst</small></div>
     <div class="tile"><span>Kosten gesamt</span><b>${eur(s.kosten)}</b><small>inkl. ${eur(s.arbeit)} Arbeitszeit</small></div>
-    <div class="tile"><span>Gewinn (nach Stundenlohn)</span><b class="${s.gewinn < 0 ? 'err' : 'okc'}">${eur(s.gewinn)}</b><small>Umsatz − alle Kosten</small></div>
-    <div class="tile"><span>Ergebnis ohne Arbeitszeit</span><b>${eur(s.umsatz - s.maschine - s.material - s.fremd)}</b><small>Umsatz − Maschine − Material − Fremd</small></div>
-    <div class="tile"><span>Offene Rechnungen (alle Jahre)</span><b class="warnc">${eur(a.offen_summe)}</b><small>${a.offen_anzahl} Stück</small></div>
+    <div class="tile"><span>Ø Rechnung</span><b>${eur(kz.rechnung_schnitt)}</b><small>${kz.rechnungen} Rechnungen</small></div>
+    <div class="tile"><span>Offene Rechnungen (alle Jahre)</span><b class="${a.offen_summe ? 'warnc' : ''}">${eur(a.offen_summe)}</b><small>${a.offen_anzahl} Stück${a.ueberfaellig.length ? `, <span class="err">${a.ueberfaellig.length} überfällig</span>` : ''}</small></div>
   </div>
   <div class="card"><div class="ch"><h3>Umsatz & Kosten pro Monat</h3></div><div class="cb">${barChart(a.monate, M)}</div>
-    <div class="legend"><span><span class="legend-dot" style="background:var(--ok)"></span>Umsatz</span><span><span class="legend-dot c-maschine"></span>Maschine</span><span><span class="legend-dot c-material"></span>Material</span><span><span class="legend-dot c-arbeit"></span>Arbeitszeit</span><span><span class="legend-dot c-fremd"></span>Zubehör/Fremd</span></div></div>
+    <div class="legend"><span><span class="legend-dot" style="background:var(--ok)"></span>Umsatz</span>${kArten.map(([, l, c]) => `<span><span class="legend-dot" style="background:${c}"></span>${l}</span>`).join('')}</div></div>
+  <div class="grid2e">
+    <div class="card"><div class="ch"><h3>Wohin geht das Geld?</h3><span class="muted small">Kosten ${awJahr}</span></div>
+      ${s.kosten ? `<div class="cb"><div class="stackbar" style="margin-bottom:10px">${kArten.map(([k, l, c]) => `<div style="width:${(s[k] / s.kosten) * 100}%;background:${c}" title="${l}"></div>`).join('')}</div>
+        ${kArten.map(([k, l, c]) => `<div class="calcrow"><span><span class="legend-dot" style="background:${c}"></span>${l}${k === 'ausschuss' ? ` <span class="tiny muted">(${kz.ausschuss_anzahl} Müll-Drucke ohne Auftrag)</span>` : k === 'waren' ? ' <span class="tiny muted">(Herstellkosten verkaufter Produkte)</span>' : ''}</span><span>${eur(s[k])} <span class="tiny muted">${Math.round((s[k] / s.kosten) * 100)} %</span></span></div>`).join('')}</div>`
+        : '<div class="empty small">Noch keine Kosten erfasst.</div>'}</div>
+    <div class="card"><div class="ch"><h3>Umsatz nach Vertriebsweg</h3></div>
+      ${a.vertrieb.length ? `<div class="cb">${a.vertrieb.map((v) => `<div class="hrow"><span class="grow">${esc(v.name)}</span><span class="num">${eur(v.umsatz)} <span class="tiny muted">${Math.round(s.umsatz ? (v.umsatz / s.umsatz) * 100 : 0)} %</span></span>${hbar(v.umsatz, vMax)}</div>`).join('')}</div>`
+        : '<div class="empty small">Noch keine Rechnungen.</div>'}</div>
+  </div>
+  <div class="grid2e">
+    <div class="card"><div class="ch"><h3>Bestseller-Produkte ${awJahr}</h3><a href="#produkte" class="small">Produkte →</a></div>
+      ${a.produkte.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Produkt</th><th class="num">Verkauft</th><th class="num">Umsatz</th><th class="num">Gewinn</th></tr></thead><tbody>
+        ${a.produkte.map((p) => `<tr><td>${esc(p.name)}${hbar(p.umsatz, pMax, 'var(--ok)')}</td><td class="num">${num(p.menge)}</td><td class="num">${eur(p.umsatz)}</td>
+          <td class="num ${p.ohne_hk ? 'muted' : p.gewinn < 0 ? 'err' : 'okc'}" title="${p.ohne_hk ? 'Bei diesem Produkt fehlen die Herstellkosten' : ''}">${p.ohne_hk ? '?' : eur(p.gewinn)}</td></tr>`).join('')}
+        </tbody></table></div>${a.produkte.some((p) => p.ohne_hk) ? '<div class="cb tiny muted">„?“ = beim Produkt sind keine Herstellkosten hinterlegt – Gewinn nicht berechenbar.</div>' : ''}`
+        : '<div class="empty small">Noch keine Produkte aus dem Katalog verkauft.</div>'}</div>
+    <div class="card"><div class="ch"><h3>Unter Kalkulation verkauft</h3><span class="muted small">Preis &lt; empfohlen</span></div>
+      ${unter.length ? `<ul class="list-compact">${unter.slice(0, 8).map((o) => `<li class="click" onclick="location.hash='#auftrag/${o.id}'"><div class="grow"><b>${esc(o.titel)}</b><div class="tiny muted">${esc(o.nr)} · ${esc(o.kunde)} · empfohlen ${eur(o.empfohlen)}, verrechnet ${eur(o.umsatz)}</div></div>
+        <span class="num warnc">−${eur(o.empfohlen - o.umsatz)}</span></li>`).join('')}</ul>${unter.length > 8 ? `<div class="cb tiny muted">… und ${unter.length - 8} weitere</div>` : ''}`
+        : '<div class="empty small">Alle Aufträge wurden mindestens zum empfohlenen Preis verrechnet 👍</div>'}</div>
+  </div>
   <div class="grid2e">
     <div class="card"><div class="ch"><h3>Arbeitszeit pro Person</h3></div><div class="tblwrap"><table class="tbl"><thead><tr><th>Monat</th>${D.persons.map((p) => `<th class="num"><span class="legend-dot" style="background:${esc(p.farbe || '#888')}"></span>${esc(p.name)}</th>`).join('')}<th class="num">Summe</th></tr></thead><tbody>
       ${a.monate.map((m, i) => { const tot = Object.values(m.stunden).reduce((x, y) => x + y, 0); return tot ? `<tr><td>${M[i]}</td>${D.persons.map((p) => `<td class="num">${m.stunden[p.id] ? hm(m.stunden[p.id]) + ' h' : '–'}</td>`).join('')}<td class="num"><b>${hm(tot)} h</b></td></tr>` : ''; }).join('')}
@@ -1291,7 +1353,7 @@ routes.auswertung = async () => {
       <tr><td class="muted" style="font-weight:500">Wert</td>${D.persons.map((p) => `<td class="num muted" style="font-weight:500">${eur((hp[p.id] || 0) * p.stundensatz)}</td>`).join('')}<td class="num">${eur(s.arbeit)}</td></tr></tfoot></table></div></div>
     <div class="card"><div class="ch"><h3>Maschinenstunden</h3></div><div class="tblwrap"><table class="tbl"><thead><tr><th>Maschine</th><th class="num">Stunden ${awJahr}</th><th class="num">Abnutzung ${awJahr}</th></tr></thead><tbody>
       ${D.machines.map((m) => `<tr><td><span class="legend-dot" style="background:${esc(m.farbe || '#888')}"></span>${esc(m.name)}</td><td class="num">${hm(hm_[m.id] || 0)} h</td><td class="num">${eur((hm_[m.id] || 0) * (m.abschreibung + m.verschleiss))}</td></tr>`).join('')}
-      </tbody></table></div></div>
+      </tbody></table></div><div class="cb tiny muted">Nur Stunden aus Aufträgen. Private Drucke und Müll zählen bei der Maschine zur Abnutzung, hier aber nicht.</div></div>
   </div>
   <div class="grid2">
     <div class="card"><div class="ch"><h3>Aufträge ${awJahr}</h3></div>${a.auftraege.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Nr.</th><th>Auftrag</th><th>Kunde</th><th class="num">Kosten</th><th class="num">Umsatz</th><th class="num">Gewinn</th></tr></thead><tbody>
@@ -1316,9 +1378,9 @@ function barChart(months, labels) {
     const bw = cw * 0.32;
     g += `<rect x="${x + cw * 0.14}" y="${y(m.umsatz)}" width="${bw}" height="${Math.max(0, y(0) - y(m.umsatz))}" rx="3" fill="var(--ok)"><title>${labels[i]}: Umsatz ${eur(m.umsatz)}</title></rect>`;
     let acc = 0;
-    [['maschine', 'var(--info)'], ['material', 'var(--teal)'], ['arbeit', '#ff922b'], ['fremd', 'var(--violet)']].forEach(([k, c]) => {
+    KOSTEN_ART.forEach(([k, l, c]) => {
       if (!m[k]) return;
-      g += `<rect x="${x + cw * 0.14 + bw + 3}" y="${y(acc + m[k])}" width="${bw}" height="${Math.max(0, y(acc) - y(acc + m[k]))}" fill="${c}"><title>${labels[i]}: ${k} ${eur(m[k])}</title></rect>`;
+      g += `<rect x="${x + cw * 0.14 + bw + 3}" y="${y(acc + m[k])}" width="${bw}" height="${Math.max(0, y(acc) - y(acc + m[k]))}" fill="${c}"><title>${labels[i]}: ${l} ${eur(m[k])}</title></rect>`;
       acc += m[k];
     });
     g += `<text x="${x + cw / 2}" y="${H - 6}" text-anchor="middle">${labels[i]}</text>`;
@@ -1326,6 +1388,92 @@ function barChart(months, labels) {
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Umsatz und Kosten pro Monat">${g}</svg>`;
 }
 function niceStep(x) { const p = 10 ** Math.floor(Math.log10(x)); const f = x / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p; }
+
+// ======================================================================
+//  Lagerwarnungen (Mindestbestand)
+// ======================================================================
+function lowStock() {
+  const out = [];
+  const low = (x) => x.aktiv && x.bestand != null && x.mindestbestand != null && x.bestand <= x.mindestbestand;
+  D.materials.filter(low).forEach((m) => out.push({ art: 'material', id: m.id, name: m.name + (m.farbe && m.farbe !== 'diverse' ? ' · ' + m.farbe : ''), bestand: m.bestand, min: m.mindestbestand, einheit: m.einheit }));
+  (D.products || []).filter(low).forEach((p) => out.push({ art: 'produkt', id: p.id, name: p.name, bestand: p.bestand, min: p.mindestbestand, einheit: p.einheit || 'Stk' }));
+  return out.sort((a, b) => (a.bestand - a.min) - (b.bestand - b.min));
+}
+
+// ======================================================================
+//  Globale Suche  (Taste „/“ oder Strg+K)
+// ======================================================================
+function openSearch() {
+  if ($('#gsQ')) return;
+  const m = modal({ title: 'Suchen', body: '<input type="search" id="gsQ" placeholder="Auftrag, Kunde, Rechnung, Produkt, Material …" autocomplete="off"><div id="gsRes" style="margin-top:12px"></div>' });
+  let hits = []; let sel = 0;
+  const go = (h) => { m.close(); if (h.fn) h.fn(); else { location.hash = h.hash; } };
+  const draw = () => {
+    const q = $('#gsQ', m.el).value.trim().toLowerCase();
+    hits = [];
+    if (q.length >= 2) {
+      const has = (...t) => t.filter(Boolean).join(' ').toLowerCase().includes(q);
+      D.orders.forEach((o) => { const k = byId(D.customers, o.customer_id); const it = D.order_items.filter((i) => i.order_id === o.id).map((i) => `${i.bezeichnung} ${i.personalisierung || ''}`).join(' ');
+        if (has(o.nr, o.titel, kname(k), it, o.beschreibung)) hits.push({ g: 'Aufträge', t: `${o.nr} · ${o.titel}`, s: `${kname(k)} · ${STATUS_LABEL[o.status]}`, hash: '#auftrag/' + o.id, sort: -o.id }); });
+      D.customers.forEach((k) => { if (has(k.nr, kname(k), k.vorname, k.nachname, k.ort, k.telefon, k.email)) hits.push({ g: 'Kunden', t: kname(k), s: [k.nr, k.ort, k.telefon].filter(Boolean).join(' · '), hash: '#kunde/' + k.id }); });
+      D.documents.forEach((d) => { if (has(d.nr, kname(d.kunde), ...d.positionen.map((p) => p.bezeichnung))) hits.push({ g: d.typ === 'rechnung' ? 'Rechnungen' : 'Angebote', t: `${d.nr} · ${kname(d.kunde)}`, s: `${dmy(d.datum)} · ${eur(d.brutto)} · ${DOC_STATUS[d.status]}`, fn: () => docActions(d.id) }); });
+      (D.products || []).forEach((p) => { if (has(p.artikelnr, p.name, p.kategorie, p.farbe_material)) hits.push({ g: 'Produkte', t: p.name, s: `${eur(p.preis)}${p.bestand != null ? ' · Lager ' + num(p.bestand) : ''}`, fn: () => { location.hash = '#produkte'; setTimeout(() => editProduct(p.id), 60); } }); });
+      D.materials.forEach((x) => { if (has(x.name, x.hersteller, x.farbe)) hits.push({ g: 'Material', t: x.name, s: `${eur(x.preis)}/${x.einheit}${x.bestand != null ? ' · Lager ' + num(x.bestand) : ''}`, fn: () => { location.hash = '#material'; setTimeout(() => editMaterial(x.id), 60); } }); });
+    }
+    const order = ['Aufträge', 'Kunden', 'Rechnungen', 'Angebote', 'Produkte', 'Material'];
+    hits.sort((a, b) => order.indexOf(a.g) - order.indexOf(b.g) || (a.sort || 0) - (b.sort || 0));
+    hits = hits.slice(0, 40);
+    sel = Math.min(sel, Math.max(0, hits.length - 1));
+    let last = '';
+    $('#gsRes', m.el).innerHTML = hits.length ? `<ul class="list-compact gs">${hits.map((h, i) => `${h.g !== last ? `<li class="gs-h">${last = h.g}</li>` : ''}<li class="click ${i === sel ? 'on' : ''}" data-i="${i}"><div class="grow"><b>${esc(h.t)}</b><div class="tiny muted">${esc(h.s)}</div></div></li>`).join('')}</ul>`
+      : `<div class="muted small">${q.length >= 2 ? 'Nichts gefunden.' : 'Mindestens 2 Zeichen eingeben. ↑ ↓ wählt aus, Enter öffnet.'}</div>`;
+    const on = $('.gs .on', m.el); if (on) on.scrollIntoView({ block: 'nearest' });
+  };
+  $('#gsQ', m.el).oninput = () => { sel = 0; draw(); };
+  $('#gsQ', m.el).onkeydown = (e) => {
+    if (e.key === 'ArrowDown') { sel = Math.min(hits.length - 1, sel + 1); draw(); e.preventDefault(); }
+    if (e.key === 'ArrowUp') { sel = Math.max(0, sel - 1); draw(); e.preventDefault(); }
+    if (e.key === 'Enter' && hits[sel]) go(hits[sel]);
+  };
+  $('#gsRes', m.el).onclick = (e) => { const li = e.target.closest('li[data-i]'); if (li) go(hits[+li.dataset.i]); };
+  draw();
+  setTimeout(() => $('#gsQ', m.el).focus(), 30);
+}
+document.addEventListener('keydown', (e) => {
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName || '')) || e.target.isContentEditable;
+  if ((e.key === 'k' && (e.ctrlKey || e.metaKey)) || (e.key === '/' && !typing && !$('.modal-bg'))) { e.preventDefault(); if (D) openSearch(); }
+});
+$('#searchBtn').onclick = () => { if (D) openSearch(); };
+
+// ======================================================================
+//  Auftrags-Board (Spalten nach Status, per Ziehen verschieben)
+// ======================================================================
+const BOARD_STATUS = ['anfrage', 'angebot', 'in_arbeit', 'fertig', 'abgeholt', 'abgerechnet'];
+function orderBoard(box, list) {
+  const in7 = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
+  box.innerHTML = `<div class="board">${BOARD_STATUS.map((st) => {
+    const col = list.filter((o) => o.status === st).sort((a, b) => (a.termin || '9999').localeCompare(b.termin || '9999') || b.id - a.id);
+    return `<div class="bcol" data-st="${st}"><div class="bhead">${chip(st)}<span class="muted small">${col.length}</span><span class="spacer"></span><span class="tiny muted">${eur(col.reduce((s, o) => s + (o.kosten.umsatz || 0), 0))}</span></div>
+      <div class="bcards">${col.map((o) => `<a class="bcard" draggable="true" data-id="${o.id}" href="#auftrag/${o.id}">
+        <div class="tiny muted">${esc(o.nr)}</div><b>${esc(o.titel)}</b><div class="small muted">${esc(kname(byId(D.customers, o.customer_id)))}</div>
+        <div class="bfoot">${o.termin ? `<span class="${o.termin < today() ? 'err' : o.termin <= in7 ? 'warnc' : 'muted'}">⏰ ${dmy(o.termin)}</span>` : '<span></span>'}<span>${o.kosten.umsatz ? eur(o.kosten.umsatz) : ''}</span></div></a>`).join('') || '<div class="bempty">–</div>'}</div></div>`;
+  }).join('')}</div><p class="muted small">Karte in eine andere Spalte ziehen, um den Status zu ändern. Bezahlte und stornierte Aufträge findest du in der Liste.</p>`;
+  let drag = null;
+  box.querySelectorAll('.bcard').forEach((c) => {
+    c.addEventListener('dragstart', (e) => { drag = c.dataset.id; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', drag); c.classList.add('drag'); });
+    c.addEventListener('dragend', () => { c.classList.remove('drag'); box.querySelectorAll('.bcol').forEach((x) => x.classList.remove('over')); });
+  });
+  box.querySelectorAll('.bcol').forEach((col) => {
+    col.addEventListener('dragover', (e) => { if (drag) { e.preventDefault(); col.classList.add('over'); } });
+    col.addEventListener('dragleave', (e) => { if (!col.contains(e.relatedTarget)) col.classList.remove('over'); });
+    col.addEventListener('drop', async (e) => {
+      e.preventDefault(); col.classList.remove('over');
+      const o = byId(D.orders, +drag); drag = null;
+      if (!o || o.status === col.dataset.st) return;
+      try { warnIf(await api('PUT', `/api/t/orders/${o.id}`, { status: col.dataset.st })); toast(`${o.nr} → ${STATUS_LABEL[col.dataset.st]}`); await refresh(); } catch (err) { fail(err); }
+    });
+  });
+}
 
 // ======================================================================
 //  Maschinen
@@ -1428,7 +1576,7 @@ routes.produkte = () => {
       ${list.map((p) => `<tr class="click" data-id="${p.id}" style="${p.aktiv ? '' : 'opacity:.5'}"><td>${p.artikelnr ? `<span class="muted small">${esc(p.artikelnr)}</span> ` : ''}<b>${esc(p.name)}</b>${p.kalkulation ? ' <span title="mit Kalkulation">🧮</span>' : ''}${p.beschreibung ? `<div class="sub">${esc(p.beschreibung)}</div>` : ''}</td>
         <td>${esc(p.kategorie || '')}</td><td>${esc(p.farbe_material || '')}</td>
         <td class="num nowrap">${eur(p.preis)}${p.einheit && p.einheit !== 'Stk' ? ` / ${esc(p.einheit)}` : ''}${+p.herstellkosten ? `<div class="tiny muted">Kosten ${eur(p.herstellkosten)}</div>` : ''}</td>
-        <td class="num nowrap ${p.bestand != null && p.bestand <= 0 ? 'err' : ''}">${p.bestand == null ? '<span class="dim">–</span>' : num(p.bestand) + ' ' + esc(p.einheit || 'Stk')}</td>
+        <td class="num nowrap ${p.bestand != null && p.bestand <= 0 ? 'err' : p.bestand != null && p.mindestbestand != null && p.bestand <= p.mindestbestand ? 'warnc' : ''}">${p.bestand == null ? '<span class="dim">–</span>' : num(p.bestand) + ' ' + esc(p.einheit || 'Stk')}${p.bestand != null && p.bestand > 0 && p.mindestbestand != null && p.bestand <= p.mindestbestand ? ' ⚠' : ''}${p.herstellkosten && +p.preis ? `<div class="tiny muted" title="Marge = (Preis − Herstellkosten) ÷ Preis">Marge ${Math.round(((p.preis - p.herstellkosten) / p.preis) * 100)} %</div>` : ''}</td>
         <td class="act nowrap"><button class="icon" data-stock title="Lagerzugang buchen">＋</button><button class="icon" data-sell title="Verkaufen (Rechnung erstellen)">🧾</button></td></tr>`).join('')}
       </tbody></table>` : `<div class="empty">${D.products.length ? 'Nichts gefunden.' : 'Noch keine Produkte – lege deine fertigen Artikel an, um sie schnell abrechnen zu können.'}</div>`;
     $$('#prList tr[data-id]').forEach((tr) => tr.onclick = (e) => {
@@ -1465,7 +1613,8 @@ window.editProduct = (id, preset = {}) => {
       { k: 'einheit', l: 'Einheit', s: 4, list: ['Stk', 'Set', 'Paar', 'm', 'pausch.'] },
       { k: 'herstellkosten', l: 'Herstellkosten € pro Stück', t: 'num', s: 4, hint: 'kommt aus der Kalkulation – oder selbst eintragen' },
       { k: 'bestand', l: 'Lagerbestand', t: 'num', s: 4, hint: 'leer = Lager nicht mitzählen' },
-      { k: 'notizen', l: 'Notizen (intern)', t: 'textarea', rows: 2, s: 8 },
+      { k: 'mindestbestand', l: 'Mindestbestand', t: 'num', s: 4, hint: 'Warnung „nachproduzieren“ auf der Übersicht' },
+      { k: 'notizen', l: 'Notizen (intern)', t: 'textarea', rows: 2, s: 4 },
       { k: 'aktiv', l: 'aktiv (im Katalog auswählbar)', t: 'check' },
     ],
     values: p,
@@ -1518,7 +1667,7 @@ routes.material = () => {
     <div class="card"><div class="tblwrap"><table class="tbl"><thead><tr><th>Material</th><th>Art</th><th>Hersteller</th><th>Farbe</th><th class="num">Preis</th><th class="num">Bestand</th></tr></thead><tbody>
     ${[...D.materials].sort((a, b) => (a.typ + a.name).localeCompare(b.typ + b.name, 'de')).map((m) => `<tr class="click" onclick="editMaterial(${m.id})" style="${m.aktiv ? '' : 'opacity:.5'}"><td><b>${esc(m.name)}</b></td><td>${esc(MATTYP[m.typ] || m.typ)}</td>
       <td>${esc(m.hersteller || '')}</td><td>${esc(m.farbe || '')}</td><td class="num">${eur(m.preis)} / ${esc(m.einheit)}</td>
-      <td class="num ${m.bestand != null && m.bestand <= 0 ? 'err' : ''}">${m.bestand == null ? '<span class="dim">–</span>' : num(m.bestand) + ' ' + esc(m.einheit)}</td></tr>`).join('')}
+      <td class="num ${m.bestand != null && m.bestand <= 0 ? 'err' : m.bestand != null && m.mindestbestand != null && m.bestand <= m.mindestbestand ? 'warnc' : ''}">${m.bestand == null ? '<span class="dim">–</span>' : num(m.bestand) + ' ' + esc(m.einheit)}${m.bestand != null && m.mindestbestand != null && m.bestand <= m.mindestbestand ? ' ⚠' : ''}${m.mindestbestand != null ? `<div class="tiny muted">min. ${num(m.mindestbestand)}</div>` : ''}</td></tr>`).join('')}
     </tbody></table></div></div>`;
 };
 window.editMaterial = (id) => {
@@ -1531,7 +1680,8 @@ window.editMaterial = (id) => {
       { k: 'einheit', l: 'Einheit', t: 'select', o: [['kg', 'kg (Eingabe in Gramm)'], ['Stück', 'Stück / Platte'], ['m²', 'm²'], ['m', 'm'], ['l', 'Liter']], s: 4 },
       { k: 'preis', l: 'Preis € pro Einheit', t: 'num', s: 4 },
       { k: 'bestand', l: 'Lagerbestand (optional)', t: 'num', s: 4, hint: 'leer = nicht mitzählen' },
-      { k: 'notizen', l: 'Notizen', t: 'textarea', rows: 2 },
+      { k: 'mindestbestand', l: 'Mindestbestand (optional)', t: 'num', s: 4, hint: 'Warnung auf der Übersicht, wenn der Bestand darunter fällt' },
+      { k: 'notizen', l: 'Notizen', t: 'textarea', rows: 2, s: 8 },
       { k: 'aktiv', l: 'aktiv', t: 'check' },
     ],
     values: m,
